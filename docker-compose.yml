@@ -1,13 +1,21 @@
 services:
   o2cloud-webdav:
-    build: .
-    image: o2cloud-webdav-gateway:latest
+    # Prebuilt image from Docker Hub. To build from source instead,
+    # comment out `image:` and uncomment `build: .`.
+    image: garanda21/o2cloud_gateway_webdav:latest
+    # build: .
     container_name: o2cloud-webdav
     restart: unless-stopped
     ports:
       - "8088:8080"
+      # Host port for the noVNC login screen. Change the left side if 6080 is
+      # already taken (e.g. Synology DSM), and update O2_LOGIN_NOVNC_URL to match.
       - "6080:6080"
     environment:
+      # Run as the host user/group that owns the mounted volumes. The entrypoint
+      # applies these and drops privileges; no `user:` override needed.
+      PUID: "1000"
+      PGID: "100"
       APP_HOST: "0.0.0.0"
       APP_PORT: "8080"
       APP_BASE_URL: "http://localhost:8088"
@@ -15,6 +23,9 @@ services:
       DISPLAY: ":99"
       XVFB_SCREEN: "1280x900x24"
       NOVNC_PORT: "6080"
+      # Set this when the noVNC host port differs from the internal 6080 (or the
+      # gateway is reached by IP/hostname). Must point at the published host port.
+      O2_LOGIN_NOVNC_URL: "http://localhost:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true"
       CLOUD_PROVIDER: "o2"
       CONFIG_DIR: "/config"
       CACHE_DIR: "/cache"
@@ -29,15 +40,7 @@ services:
       - ./config:/config
       - ./cache:/cache
       - ./data:/data
-    secrets:
-      - webdav_password
-      - admin_password
-      - app_encryption_key
-
-secrets:
-  webdav_password:
-    file: ./secrets/webdav_password.txt
-  admin_password:
-    file: ./secrets/admin_password.txt
-  app_encryption_key:
-    file: ./secrets/app_encryption_key.txt
+      # Secret files bind-mounted read-only into /run/secrets (must exist first).
+      - ./secrets/webdav_password.txt:/run/secrets/webdav_password:ro
+      - ./secrets/admin_password.txt:/run/secrets/admin_password:ro
+      - ./secrets/app_encryption_key.txt:/run/secrets/app_encryption_key:ro

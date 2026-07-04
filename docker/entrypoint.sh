@@ -1,6 +1,26 @@
 #!/bin/sh
 set -eu
 
+# --- Privilege / permissions bootstrap -------------------------------------
+# When started as root, align the runtime user with the host-provided PUID/PGID
+# (so it can write the bind-mounted volumes), fix ownership, prepare the X11
+# socket dir, then drop privileges to that user via gosu and re-exec this script.
+PUID="${PUID:-10001}"
+PGID="${PGID:-10001}"
+
+if [ "$(id -u)" = "0" ]; then
+  groupmod -o -g "$PGID" o2gateway 2>/dev/null || true
+  usermod  -o -u "$PUID" -g "$PGID" o2gateway 2>/dev/null || true
+
+  mkdir -p /config /cache /data /tmp/.X11-unix
+  chmod 1777 /tmp/.X11-unix
+  chown -R "$PUID:$PGID" /config /cache /data /home/o2gateway 2>/dev/null || true
+
+  export HOME=/home/o2gateway
+  exec gosu "$PUID:$PGID" "$0" "$@"
+fi
+
+export HOME="${HOME:-/home/o2gateway}"
 export DISPLAY="${DISPLAY:-:99}"
 XVFB_SCREEN="${XVFB_SCREEN:-1280x900x24}"
 VNC_PORT="${VNC_PORT:-5900}"

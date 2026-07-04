@@ -1,5 +1,7 @@
 # O2Cloud WebDAV Gateway
 
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-garanda21%2Fo2cloud__gateway__webdav-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/garanda21/o2cloud_gateway_webdav)
+
 A Docker-first, Linux-native gateway that exposes **O2 Cloud** (the O2 / Telefónica
 personal cloud storage service, `cloud.o2online.es`) as a standard **WebDAV** share,
 plus a small web **admin panel** for authentication and status.
@@ -79,9 +81,14 @@ printf 'change-me-webdav\n' > secrets/webdav_password.txt
 printf 'change-me-admin\n'  > secrets/admin_password.txt
 openssl rand -base64 32     > secrets/app_encryption_key.txt
 
-# 4. Build and run
-docker compose up --build
+# 4. Start
+docker compose up -d
 ```
+
+By default `docker-compose.yml` pulls the prebuilt image
+[`garanda21/o2cloud_gateway_webdav:latest`](https://hub.docker.com/r/garanda21/o2cloud_gateway_webdav)
+from Docker Hub — no local build needed. To build from source instead, replace the
+`image:` line with `build: .` and run `docker compose up --build`.
 
 Then open:
 
@@ -207,6 +214,12 @@ in-code defaults; `docker-compose.yml` overrides several of them.
 | `APP_PORT` | `8080` | Port the app listens on inside the container (mapped to `8088` on the host by compose). |
 | `APP_BASE_URL` | `http://localhost:8080` | Public base URL of the gateway. Used to build absolute links, including the default noVNC URL. |
 | `APP_ENCRYPTION_KEY_FILE` | _(unset)_ | File containing the encryption key used to encrypt the stored O2 session. |
+| `PUID` | `10001` | Host user id the container runs as. Set to the owner of the mounted volumes so the app can write `/config`, `/cache`, `/data`. |
+| `PGID` | `10001` | Host group id the container runs as (see `PUID`). |
+
+The container starts as root only to apply `PUID`/`PGID`, fix volume ownership and
+prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
+`HOME` variable is needed in compose.
 
 ### Cloud provider
 
@@ -230,7 +243,7 @@ in-code defaults; `docker-compose.yml` overrides several of them.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `O2_LOGIN_NOVNC_URL` | _(unset)_ | Explicit URL to the noVNC login screen. If unset, it is derived from `APP_BASE_URL`, `NOVNC_PORT` and `NOVNC_PATH`. |
+| `O2_LOGIN_NOVNC_URL` | _(unset)_ | Explicit URL to the noVNC login screen. If unset, it is derived from `APP_BASE_URL`, `NOVNC_PORT` and `NOVNC_PATH`. **Set this whenever the published host port differs from the internal `6080`** (e.g. you remapped it because `6080` was taken), or the gateway is reached by IP/hostname — otherwise the login link points at the wrong port. |
 | `NOVNC_PORT` | `6080` | Host/container port serving the noVNC web client. |
 | `NOVNC_PATH` | `/vnc.html?autoconnect=true&resize=scale&reconnect=true` | Path + query appended when building the noVNC URL. |
 | `DISPLAY` | `:99` | Virtual X display Chromium and VNC use (set in Dockerfile/compose). |

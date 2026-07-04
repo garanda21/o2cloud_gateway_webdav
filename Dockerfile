@@ -12,6 +12,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         fluxbox \
+        gosu \
         novnc \
         websockify \
         x11vnc \
@@ -44,7 +45,9 @@ RUN useradd --create-home --uid 10001 o2gateway \
     && chmod +x /app/docker/entrypoint.sh \
     && chown -R o2gateway:o2gateway /config /cache /data /app /ms-playwright
 
-USER o2gateway
+# Container starts as root so the entrypoint can align the runtime user with the
+# host-provided PUID/PGID and chown the mounted volumes, then drops privileges
+# to that user via gosu. No `user:` override is needed in compose.
 
 EXPOSE 8080 6080
 VOLUME ["/config", "/cache", "/data"]

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "o2cloud-webdav-gateway"
+version = "0.1.0"
+description = "Docker WebDAV gateway for O2 Cloud"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "httpx>=0.27.0",
+  "pydantic-settings>=2.3.0",
+  "jinja2>=3.1.0",
+  "python-multipart>=0.0.9",
+  "lxml>=5.2.0",
+  "aiosqlite>=0.20.0",
+  "cryptography>=42.0.0",
+]
+
+[project.optional-dependencies]
+login = ["playwright>=1.45.0"]
+test = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.0",
+  "respx>=0.21.0",
+  "asgi-lifespan>=2.1.0",
+]
+
+[project.scripts]
+o2gateway = "o2gateway.main:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+o2gateway = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+

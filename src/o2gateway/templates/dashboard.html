@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>O2Cloud WebDAV Gateway</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; background: #f4f6f8; color: #1f2933; }
+      header { background: #102a43; color: white; padding: 16px 24px; display: flex; gap: 16px; justify-content: space-between; align-items: center; }
+      main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+      section { background: white; border: 1px solid #d9e2ec; border-radius: 8px; padding: 18px; margin-bottom: 16px; min-width: 0; }
+      dl { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr); gap: 8px 16px; margin: 0; }
+      dt { font-weight: 700; color: #52606d; }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      button { padding: 8px 12px; border: 1px solid #9fb3c8; border-radius: 6px; background: #fff; cursor: pointer; }
+      button.primary { background: #1769aa; color: white; border-color: #1769aa; }
+      pre { background: #102a43; color: #d9e2ec; padding: 12px; overflow: auto; max-height: 360px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      textarea { width: 100%; min-height: 160px; box-sizing: border-box; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      .muted { color: #627d98; }
+      .inline-link { color: #1769aa; text-decoration: none; }
+      .inline-link:hover { text-decoration: underline; }
+      .status-note { margin-top: 8px; color: #52606d; }
+      @media (max-width: 640px) {
+        header { padding: 14px 16px; }
+        main { margin: 16px auto; }
+        dl { grid-template-columns: 1fr; gap: 2px; }
+        dd { margin-bottom: 10px; }
+        button { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>O2Cloud WebDAV Gateway</strong>
+      <form action="{{ settings.normalized_admin_base() }}/logout" method="post"><button>Salir</button></form>
+    </header>
+    <main>
+      <section>
+        <h2>Estado</h2>
+        <dl id="status">
+          <dt>WebDAV URL</dt><dd>{{ webdav_url }}</dd>
+          <dt>Proveedor</dt><dd>{{ settings.cloud_provider }}</dd>
+          <dt>Sesión O2</dt><dd>{{ "configurada" if session and session.is_authenticated else "sin configurar" }}</dd>
+          <dt>Login interactivo</dt><dd id="login-state">{{ login_status.state }}</dd>
+        </dl>
+        <p class="status-note">noVNC: <a class="inline-link" href="{{ novnc_url }}" target="_blank" rel="noopener noreferrer">{{ novnc_url }}</a></p>
+      </section>
+      <section>
+        <h2>Acciones</h2>
+        <div class="actions">
+          <button class="primary" onclick="post('/api/admin/test')">Test conexión</button>
+          <button onclick="post('/api/admin/cache/clear')">Limpiar caché</button>
+          <button onclick="post('/api/admin/o2/logout')">Eliminar sesión O2</button>
+        </div>
+      </section>
+      <section>
+        <h2>Sesión O2</h2>
+        <div class="actions" style="margin-bottom:14px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="o2-login-mode" value="interactive" checked onchange="switchLoginMode(this.value)">
+            Login interactivo
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="o2-login-mode" value="import" onchange="switchLoginMode(this.value)">
+            Importar JSON
+          </label>
+        </div>
+        <div id="login-mode-interactive">
+          <p class="muted">Abre una ventana de navegador controlada donde puedes completar el login con tu teléfono, contraseña y SMS.</p>
+          <button class="primary" onclick="startO2Login()">Iniciar login O2</button>
+        </div>
+        <div id="login-mode-import" style="display:none;">
+          <p class="muted">Pega JSON con validationKey, cookies y userAgent.</p>
+          <textarea id="session-json"></textarea>
+          <p><button onclick="importSession()">Importar sesión</button></p>
+        </div>
+      </section>
+      <section>
+        <h2>Salida</h2>
+        <pre id="output"></pre>
+      </section>
+      <section>
+        <h2>Logs recientes</h2>
+        <button onclick="loadLogs()">Actualizar logs</button>
+        <pre id="logs"></pre>
+      </section>
+    </main>
+    <script>
+      const csrf = "{{ csrf }}";
+      const novncUrl = "{{ novnc_url }}";
+      let loginPopup = null;
+      let loginPollTimer = null;
+
+      function fmtBytes(bytes) {
+        if (bytes == null) return '-';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        let v = Number(bytes);
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+      }
+
+      function switchLoginMode(mode) {
+        document.getElementById('login-mode-interactive').style.display = mode === 'interactive' ? '' : 'none';
+        document.getElementById('login-mode-import').style.display = mode === 'import' ? '' : 'none';
+      }
+
+      function pretty(value) {
+        return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      }
+
+      async function post(url) {
+        const out = document.getElementById('output');
+        out.textContent = 'Ejecutando...';
+        const res = await fetch(url, {method: 'POST', headers: {'x-csrf-token': csrf}});
+        const text = await res.text();
+        out.textContent = text;
+        await loadStatus();
+        await loadLoginStatus();
+      }
+
+      async function importSession() {
+        const raw = document.getElementById('session-json').value;
+        const res = await fetch('/api/admin/o2/import', {method: 'POST', headers: {'content-type': 'application/json', 'x-csrf-token': csrf}, body: raw});
+        document.getElementById('output').textContent = await res.text();
+        await loadStatus();
+        await loadLoginStatus();
+      }
+
+      function renderStatus(data) {
+        const loginState = document.getElementById('login-state')?.textContent || 'idle';
+        const rows = [
+          ['Servicio', data.service || 'unknown'],
+          ['Proveedor', data.cloudProvider || '-'],
+          ['WebDAV URL', data.webdavUrl || '-'],
+          ['Sesión O2', data.o2Session || '-'],
+          ['Login interactivo', loginState],
+          ['Cuota', data.quota ? `${fmtBytes(data.quota.usedBytes)} / ${fmtBytes(data.quota.totalBytes)}` : '-'],
+          ['Metadata cache', data.metadataCacheEntries ?? '-'],
+          ['Locks activos', data.activeLocks ?? '-'],
+          ['Último error', data.lastError || '-'],
+        ];
+        document.getElementById('status').innerHTML = rows
+          .map(([label, value]) => `<dt>${label}</dt><dd${label === 'Login interactivo' ? ' id="login-state"' : ''}>${String(value)}</dd>`)
+          .join('');
+      }
+
+      async function loadStatus() {
+        const res = await fetch('/api/admin/status');
+        const data = await res.json();
+        renderStatus(data);
+      }
+
+      async function loadLoginStatus() {
+        const res = await fetch('/api/admin/o2/login/status');
+        const data = await res.json();
+        const stateText = data.state === 'running'
+          ? 'running - completa el login en noVNC'
+          : data.state === 'succeeded'
+            ? 'succeeded - sesión capturada'
+            : data.state === 'failed'
+              ? `failed - ${data.error || 'error'}`
+              : data.state;
+        const existing = document.getElementById('login-state');
+        if (existing) {
+          existing.textContent = stateText;
+        }
+        return data;
+      }
+
+      function stopLoginPolling() {
+        if (loginPollTimer) {
+          clearInterval(loginPollTimer);
+          loginPollTimer = null;
+        }
+      }
+
+      function closeLoginPopup() {
+        if (loginPopup && !loginPopup.closed) {
+          loginPopup.close();
+        }
+        loginPopup = null;
+      }
+
+      async function pollLoginStatus() {
+        try {
+          const data = await loadLoginStatus();
+          if (data.state === 'running') {
+            return;
+          }
+          stopLoginPolling();
+          if (data.state === 'succeeded') {
+            closeLoginPopup();
+            document.getElementById('output').textContent = 'Login O2 completado. Estado actualizado.';
+            await loadStatus();
+            await loadLogs();
+            return;
+          }
+          if (data.state === 'failed') {
+            document.getElementById('output').textContent = pretty({ok: false, error: data.error});
+          }
+        } catch (error) {
+          stopLoginPolling();
+          document.getElementById('output').textContent = `Error consultando estado del login: ${error}`;
+        }
+      }
+
+      function ensureLoginPolling() {
+        if (!loginPollTimer) {
+          loginPollTimer = setInterval(pollLoginStatus, 2000);
+        }
+      }
+
+      async function startO2Login() {
+        const out = document.getElementById('output');
+        out.textContent = 'Iniciando login O2...';
+        loginPopup = window.open(novncUrl, '_blank', 'noopener,noreferrer');
+        if (!loginPopup) {
+          out.textContent = `noVNC no se pudo abrir automáticamente. Ábrelo manualmente aquí: ${novncUrl}`;
+        }
+        const res = await fetch('/api/admin/o2/login', {method: 'POST', headers: {'x-csrf-token': csrf}});
+        const text = await res.text();
+        let payload = null;
+        try {
+          payload = JSON.parse(text);
+        } catch (_) {}
+        out.textContent = payload ? pretty(payload) : text;
+        if (!res.ok) {
+          closeLoginPopup();
+          return;
+        }
+        ensureLoginPolling();
+        await pollLoginStatus();
+      }
+
+      async function loadLogs() {
+        const res = await fetch('/api/admin/logs');
+        document.getElementById('logs').textContent = await res.text();
+      }
+
+      async function bootstrap() {
+        await loadStatus();
+        await loadLoginStatus();
+        await loadLogs();
+        const login = await fetch('/api/admin/o2/login/status').then((res) => res.json());
+        if (login.state === 'running') {
+          ensureLoginPolling();
+        }
+      }
+
+      bootstrap();
+    </script>
+  </body>
+</html>

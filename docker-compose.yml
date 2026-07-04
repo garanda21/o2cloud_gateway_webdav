@@ -1,0 +1,43 @@
+services:
+  o2cloud-webdav:
+    build: .
+    image: o2cloud-webdav-gateway:latest
+    container_name: o2cloud-webdav
+    restart: unless-stopped
+    ports:
+      - "8088:8080"
+      - "6080:6080"
+    environment:
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8080"
+      APP_BASE_URL: "http://localhost:8088"
+      APP_ENCRYPTION_KEY_FILE: "/run/secrets/app_encryption_key"
+      DISPLAY: ":99"
+      XVFB_SCREEN: "1280x900x24"
+      NOVNC_PORT: "6080"
+      CLOUD_PROVIDER: "o2"
+      CONFIG_DIR: "/config"
+      CACHE_DIR: "/cache"
+      DATA_DIR: "/data"
+      SQLITE_PATH: "/data/o2cloud-gateway.db"
+      WEBDAV_PATH_BASE: "/dav"
+      ADMIN_PATH_BASE: "/admin"
+      CACHE_METADATA_TTL_SECONDS: "20"
+      UPLOAD_MAX_FILE_MB: "10240"
+      LOG_LEVEL: "INFO"
+    volumes:
+      - ./config:/config
+      - ./cache:/cache
+      - ./data:/data
+    secrets:
+      - webdav_password
+      - admin_password
+      - app_encryption_key
+
+secrets:
+  webdav_password:
+    file: ./secrets/webdav_password.txt
+  admin_password:
+    file: ./secrets/admin_password.txt
+  app_encryption_key:
+    file: ./secrets/app_encryption_key.txt

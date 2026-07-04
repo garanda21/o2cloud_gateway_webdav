@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>O2Cloud Gateway Login</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1f2933; }
+      main { max-width: 360px; margin: 12vh auto; background: white; border: 1px solid #d8dee8; border-radius: 8px; padding: 24px; }
+      label { display: block; margin-top: 14px; font-size: 14px; }
+      input { width: 100%; box-sizing: border-box; padding: 10px; margin-top: 6px; border: 1px solid #b8c2d1; border-radius: 6px; }
+      button { margin-top: 18px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: #1769aa; color: white; font-weight: 600; }
+      .error { color: #b42318; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>O2Cloud Gateway</h1>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      <form method="post">
+        <label>Usuario <input name="username" autocomplete="username"></label>
+        <label>Contraseña <input name="password" type="password" autocomplete="current-password"></label>
+        <button type="submit">Entrar</button>
+      </form>
+    </main>
+  </body>
+</html>
+

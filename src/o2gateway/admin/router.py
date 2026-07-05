@@ -91,6 +91,7 @@ def create_admin_router(
         session = session_store.read()
         quota = None
         test_error = None
+        o2_session = "configured" if session and session.is_authenticated else "missing"
         try:
             quota_value = await store_factory().quota()
             quota = {
@@ -98,6 +99,12 @@ def create_admin_router(
                 "totalBytes": quota_value.total_bytes,
                 "freeBytes": quota_value.free_bytes,
             }
+        except CloudSessionExpired as ex:
+            o2_session = "expired"
+            test_error = "Sesión O2 expirada, vuelve a iniciar sesión. (%s)" % str(ex)
+        except CloudSessionMissing as ex:
+            o2_session = "missing"
+            test_error = str(ex)
         except Exception as ex:
             test_error = str(ex)
         return {
@@ -105,7 +112,7 @@ def create_admin_router(
             "version": "0.1.0",
             "cloudProvider": settings.cloud_provider,
             "webdavUrl": settings.app_base_url.rstrip("/") + settings.normalized_webdav_base(),
-            "o2Session": "configured" if session and session.is_authenticated else "missing",
+            "o2Session": o2_session,
             "quota": quota,
             "metadataCacheEntries": await metadata_cache.count(),
             "activeLocks": len(await locks.list_active()),

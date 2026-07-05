@@ -61,12 +61,43 @@ class O2CloudApiClient:
         self.client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
         self._folder_candidates: dict[str, list[str]] = {}
         self._download_urls: dict[str, str] = {}
+        # Once O2 rejects the session with 401/403 we record the validationKey
+        # that failed. While that same key is active we short-circuit every
+        # request instead of hammering O2 with calls that can only fail again.
+        self._expired_key: Optional[str] = None
+        self._expired_at: Optional[str] = None
 
     async def close(self) -> None:
         await self.client.aclose()
 
+    def _mark_session_expired(self) -> None:
+        session = self.session_store.read()
+        self._expired_key = session.validation_key if session else ""
+        self._expired_at = datetime.now(timezone.utc).isoformat()
+
+    def _clear_session_expiry(self) -> None:
+        self._expired_key = None
+        self._expired_at = None
+
+    def session_expired_at(self) -> Optional[str]:
+        """ISO timestamp of when the current session was flagged expired, else None."""
+        if self._expired_key is None:
+            return None
+        session = self.session_store.read()
+        current = session.validation_key if session else ""
+        if current != self._expired_key:
+            # A new session was imported/logged in; the flag no longer applies.
+            self._clear_session_expiry()
+            return None
+        return self._expired_at
+
     async def validate_session(self, session: Optional[O2Session] = None) -> bool:
-        session = session or self._require_session()
+        if session is None:
+            # Read directly (not via _require_session) so an expired-flag does not
+            # short-circuit an explicit re-check; this probe can clear the flag.
+            session = self.session_store.read()
+            if session is None or not session.is_authenticated:
+                raise CloudSessionMissing("O2 session is not configured")
         probes = [
             ("GET", "profile", {"action": "get"}, None),
             ("GET", "user/status", {"action": "get"}, None),
@@ -81,9 +112,11 @@ class O2CloudApiClient:
                         continue
                     if '"error"' in text and any(term in text for term in ["invalid", "unauthorized", "forbidden"]):
                         continue
+                    self._clear_session_expiry()
                     return True
             except Exception:
                 continue
+        self._mark_session_expired()
         return False
 
     async def root_folder(self) -> O2Item:
@@ -177,6 +210,7 @@ class O2CloudApiClient:
             response = await self.client.post(url, headers=headers, files=files)
         self._capture_cookies(response, session)
         if response.status_code in (401, 403):
+            self._mark_session_expired()
             raise CloudSessionExpired("O2 rejected upload session")
         if response.status_code >= 500 and size > 200 * 1024 * 1024:
             confirmed = await self.find_child_with_retries(parent_folder_id, name, False, expected_size=size)
@@ -379,6 +413,7 @@ class O2CloudApiClient:
             if response.status_code == 416:
                 return
             if response.status_code in (401, 403):
+                self._mark_session_expired()
                 raise CloudSessionExpired("download session expired")
             response.raise_for_status()
             async for chunk in response.aiter_bytes(1024 * 1024):
@@ -387,6 +422,7 @@ class O2CloudApiClient:
     async def _json(self, method: str, resource: str, query: dict[str, str], body: Any = None, form: bool = False) -> dict[str, Any]:
         response = await self._request(method, resource, query, body=body, form=form, parse_json=False)
         if response.status_code in (401, 403):
+            self._mark_session_expired()
             raise CloudSessionExpired("O2 session expired")
         response.raise_for_status()
         try:
@@ -448,6 +484,12 @@ class O2CloudApiClient:
         session = self.session_store.read()
         if session is None or not session.is_authenticated:
             raise CloudSessionMissing("O2 session is not configured")
+        if self._expired_key is not None:
+            if session.validation_key == self._expired_key:
+                # Known-expired session: fail fast without contacting O2.
+                raise CloudSessionExpired("O2 session expired; re-login required")
+            # Session changed (re-login/import) -> the previous flag is stale.
+            self._clear_session_expiry()
         return session
 
     def _known_folder_candidates(self, folder_id: str) -> list[str]:

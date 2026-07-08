@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -53,6 +54,7 @@ def create_webdav_router(
         store = store_factory()
         method = request.method.upper()
         cloud_path = cloud_path_from_request(path_base, request.url.path)
+        started = time.perf_counter()
         try:
             if method == "OPTIONS":
                 return _options()
@@ -82,6 +84,8 @@ def create_webdav_router(
             if method == "COPY":
                 raise CloudUnsupported("COPY is not implemented in V1")
             if method == "LOCK":
+                if _is_ignored_appledouble(settings, cloud_path):
+                    return Response(status_code=204)
                 return await _lock(locks, cloud_path, request)
             if method == "UNLOCK":
                 return await _unlock(locks, request)
@@ -99,6 +103,16 @@ def create_webdav_router(
         except Exception as ex:
             logger.exception("webdav unhandled error", extra={"operation_id": operation_id})
             return Response(xml.error_response("gateway error"), status_code=502, media_type="application/xml")
+        finally:
+            logger.info(
+                "webdav request completed",
+                extra={
+                    "operation_id": operation_id,
+                    "method": method,
+                    "path": cloud_path,
+                    "durationMs": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
 
     route_path = path_base
     router.add_api_route(route_path, handler, methods=["OPTIONS", "PROPFIND", "HEAD", "GET", "PUT", "DELETE", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK", "PROPPATCH"])
@@ -171,7 +185,7 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
     if _is_ignored_appledouble(settings, cloud_path):
         async for _ in request.stream():
             pass
-        return Response(status_code=201)
+        return Response(status_code=204)
     max_bytes = settings.upload_max_file_mb * 1024 * 1024
     Path(settings.upload_spool_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix="upload-", suffix=".tmp", dir=settings.upload_spool_dir)

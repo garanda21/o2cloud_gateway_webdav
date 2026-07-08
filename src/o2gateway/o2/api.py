@@ -413,8 +413,7 @@ class O2CloudApiClient:
             if response.status_code == 416:
                 return
             if response.status_code in (401, 403):
-                self._mark_session_expired()
-                raise CloudSessionExpired("download session expired")
+                raise CloudError("download URL rejected HTTP %s" % response.status_code)
             response.raise_for_status()
             async for chunk in response.aiter_bytes(1024 * 1024):
                 yield chunk

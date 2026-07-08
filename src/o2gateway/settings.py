@@ -6,8 +6,16 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+O2_API_BASE_URL = "https://cloud.o2online.es/sapi/"
+O2_UPLOAD_BASE_URL = "https://upload.cloud.o2online.es/sapi/"
+O2_LOGIN_URL = "https://cloud.o2online.es/"
+
+MOVISTAR_API_BASE_URL = "https://micloud.movistar.es/sapi/"
+MOVISTAR_UPLOAD_BASE_URL = "https://upload.micloud.movistar.es/sapi/"
+MOVISTAR_LOGIN_URL = "https://micloud.movistar.es/"
 
 
 class Settings(BaseSettings):
@@ -21,9 +29,9 @@ class Settings(BaseSettings):
     cloud_provider: str = "simulated"
     simulated_root: str = "/data/simulated"
 
-    o2_api_base_url: str = "https://cloud.o2online.es/sapi/"
-    o2_upload_base_url: str = "https://upload.cloud.o2online.es/sapi/"
-    o2_login_url: str = "https://cloud.o2online.es/"
+    o2_api_base_url: str = O2_API_BASE_URL
+    o2_upload_base_url: str = O2_UPLOAD_BASE_URL
+    o2_login_url: str = O2_LOGIN_URL
     o2_session_file: str = "/config/secrets/o2-session.json"
     o2_playwright_headless: bool = False
     o2_login_novnc_url: Optional[str] = None
@@ -64,11 +72,42 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     log_file: str = "/data/logs/gateway.log"
 
+    @model_validator(mode="before")
+    @classmethod
+    def apply_provider_defaults(cls, values):
+        if not isinstance(values, dict):
+            return values
+        normalized = {str(key).lower(): key for key in values}
+        provider_key = normalized.get("cloud_provider")
+        provider = str(values.get(provider_key, "")).lower() if provider_key else ""
+        if provider != "movistar":
+            return values
+        defaults = {
+            "o2_api_base_url": (O2_API_BASE_URL, MOVISTAR_API_BASE_URL),
+            "o2_upload_base_url": (O2_UPLOAD_BASE_URL, MOVISTAR_UPLOAD_BASE_URL),
+            "o2_login_url": (O2_LOGIN_URL, MOVISTAR_LOGIN_URL),
+        }
+        for field_name, (o2_default, provider_default) in defaults.items():
+            current_key = normalized.get(field_name)
+            if current_key is None or values.get(current_key) == o2_default:
+                values[field_name] = provider_default
+        return values
+
     def normalized_webdav_base(self) -> str:
         return normalize_base(self.webdav_path_base)
 
     def normalized_admin_base(self) -> str:
         return normalize_base(self.admin_path_base)
+
+    def provider_label(self) -> str:
+        provider = self.cloud_provider.lower()
+        if provider == "movistar":
+            return "Movistar Cloud"
+        if provider == "o2":
+            return "O2 Cloud"
+        if provider == "simulated":
+            return "Simulated"
+        return self.cloud_provider
 
     def novnc_url(self) -> str:
         if self.o2_login_novnc_url:

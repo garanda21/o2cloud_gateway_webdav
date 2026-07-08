@@ -13,6 +13,7 @@ from o2gateway.cloud.base import CloudFileStore
 from o2gateway.cloud.simulated import SimulatedCloudFileStore
 from o2gateway.o2.api import O2CloudApiClient
 from o2gateway.o2.login import O2LoginCoordinator, O2PlaywrightLoginService
+from o2gateway.o2.movistar import MovistarCloudApiClient
 from o2gateway.o2.session import O2SessionStore
 from o2gateway.o2.store import O2CloudFileStore
 from o2gateway.operations.logging import configure_logging
@@ -33,12 +34,17 @@ class AppServices:
         self.metadata_cache = MetadataCache(self.db, settings.cache_metadata_ttl_seconds, settings.cache_negative_ttl_seconds)
         self.auth = LocalAuth(settings)
         self.o2_session_store = O2SessionStore(settings)
-        self.o2_api = O2CloudApiClient(settings, self.o2_session_store)
+        self.o2_api = self._build_cloud_api()
         self.locks = WebDavLockService(self.db)
         self._simulated_store: Optional[SimulatedCloudFileStore] = None
         self._o2_store: Optional[O2CloudFileStore] = None
         self.o2_login = O2PlaywrightLoginService(settings, self.o2_session_store, self.o2_api)
         self.o2_login_coordinator = O2LoginCoordinator(settings, self.o2_session_store, self.o2_login)
+
+    def _build_cloud_api(self) -> O2CloudApiClient:
+        if self.settings.cloud_provider.lower() == "movistar":
+            return MovistarCloudApiClient(self.settings, self.o2_session_store)
+        return O2CloudApiClient(self.settings, self.o2_session_store)
 
     async def initialize(self) -> None:
         await self.db.initialize()
@@ -48,7 +54,7 @@ class AppServices:
         await self.o2_api.close()
 
     def store(self) -> CloudFileStore:
-        if self.settings.cloud_provider.lower() == "o2":
+        if self.settings.cloud_provider.lower() in {"o2", "movistar"}:
             if self._o2_store is None:
                 self._o2_store = O2CloudFileStore(self.o2_api, self.metadata_cache)
             return self._o2_store

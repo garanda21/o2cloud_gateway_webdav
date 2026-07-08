@@ -225,7 +225,7 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLOUD_PROVIDER` | `simulated` | Backend to serve: `o2` (real O2 Cloud) or `simulated` (fake local filesystem). |
+| `CLOUD_PROVIDER` | `simulated` | Backend to serve: `o2` (O2 Cloud), `movistar` (Movistar Cloud), or `simulated` (fake local filesystem). |
 | `SIMULATED_ROOT` | `/data/simulated` | Root directory for the simulated provider's fake files. |
 
 ### O2 Cloud
@@ -238,6 +238,14 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | `O2_SESSION_FILE` | `/config/secrets/o2-session.json` | Where the encrypted O2 session (cookies + validation key) is stored. |
 | `O2_PLAYWRIGHT_HEADLESS` | `false` | Run the login Chromium headless. Must be `false` for the interactive VNC login to be visible. |
 | `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2 API HTTP requests. |
+
+For Movistar Cloud, setting the provider is enough. The gateway automatically
+uses the Movistar API, upload, and login URLs unless you explicitly set custom
+URL values:
+
+```env
+CLOUD_PROVIDER=movistar
+```
 
 ### Interactive login / VNC
 

@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from o2gateway.cloud.base import CloudFileStore
 from o2gateway.o2.login import O2LoginCoordinator, O2PlaywrightLoginService
 from o2gateway.o2.session import O2SessionStore, deserialize_session
+from o2gateway.operations.errors import CloudSessionExpired, CloudSessionMissing
 from o2gateway.persistence.metadata_cache import MetadataCache
 from o2gateway.security.auth import LocalAuth
 from o2gateway.settings import Settings
@@ -61,6 +62,7 @@ def create_admin_router(
                 "webdav_url": settings.app_base_url.rstrip("/") + settings.normalized_webdav_base(),
                 "novnc_url": settings.novnc_url(),
                 "login_status": login_coordinator.status(),
+                "provider_label": settings.provider_label(),
             },
         )
 
@@ -101,7 +103,7 @@ def create_admin_router(
             }
         except CloudSessionExpired as ex:
             o2_session = "expired"
-            test_error = "Sesión O2 expirada, vuelve a iniciar sesión. (%s)" % str(ex)
+            test_error = "Sesión %s expirada, vuelve a iniciar sesión. (%s)" % (settings.provider_label(), str(ex))
         except CloudSessionMissing as ex:
             o2_session = "missing"
             test_error = str(ex)
@@ -111,6 +113,7 @@ def create_admin_router(
             "service": "ok",
             "version": "0.1.0",
             "cloudProvider": settings.cloud_provider,
+            "cloudProviderLabel": settings.provider_label(),
             "webdavUrl": settings.app_base_url.rstrip("/") + settings.normalized_webdav_base(),
             "o2Session": o2_session,
             "quota": quota,

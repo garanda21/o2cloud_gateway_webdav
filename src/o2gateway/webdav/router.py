@@ -149,11 +149,10 @@ async def _get(store: CloudFileStore, cloud_path: str, request: Request) -> Resp
         raise CloudNotFound(cloud_path)
     byte_range = parse_range(request.headers.get("range"))
     status = 206 if byte_range is not None else 200
-    headers = _metadata_headers(item)
+    headers = _metadata_headers(item, include_content_length=False)
     if byte_range is not None and item.size is not None:
         start, end = _range_bounds(byte_range, item.size)
         headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, item.size)
-        headers["Content-Length"] = str(max(0, end - start + 1))
     return StreamingResponse(store.open_read(cloud_path, byte_range), status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
 
 
@@ -220,12 +219,12 @@ async def _unlock(locks: WebDavLockService, request: Request) -> Response:
     return Response(status_code=204 if released else 409)
 
 
-def _metadata_headers(item: CloudItemMetadata) -> dict[str, str]:
+def _metadata_headers(item: CloudItemMetadata, *, include_content_length: bool = True) -> dict[str, str]:
     headers = {
         "Accept-Ranges": "bytes",
         "Last-Modified": xml.http_date(item.modified_at),
     }
-    if item.size is not None:
+    if include_content_length and item.size is not None:
         headers["Content-Length"] = str(item.size)
     if item.etag:
         headers["ETag"] = item.etag
@@ -334,4 +333,3 @@ def _fmt_bytes(size: int) -> str:
             return f"{v:.0f} {unit}" if unit == "B" else f"{v:.2f} {unit}"
         v /= 1024
     return f"{v:.2f} TB"
-

@@ -271,6 +271,7 @@ CLOUD_PROVIDER=movistar
 | `WEBDAV_READ_ONLY` | `false` | When `true`, reject all write methods (PUT/DELETE/MOVE/MKCOL/COPY). |
 | `WEBDAV_ALLOW_DOTFILES` | `true` | Allow listing/serving dotfiles (names starting with `.`). |
 | `WEBDAV_DEPTH_INFINITY` | `false` | Allow `Depth: infinity` PROPFIND requests (can be expensive). |
+| `WEBDAV_IGNORE_APPLEDOUBLE` | `true` | Ignore macOS AppleDouble sidecar files (`._*`) instead of uploading them to the cloud. |
 
 ### Admin panel
 

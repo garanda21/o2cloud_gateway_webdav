@@ -61,7 +61,7 @@ def create_webdav_router(
             if method == "HEAD":
                 return await _head(store, cloud_path)
             if method == "GET":
-                return await _get(store, cloud_path, request)
+                return await _get(settings, store, cloud_path, request)
             if method == "PUT":
                 _assert_writable(settings)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
@@ -118,6 +118,8 @@ def _options() -> Response:
 
 
 async def _propfind(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+    if _is_ignored_appledouble(settings, cloud_path):
+        raise CloudNotFound(cloud_path)
     depth = parse_depth(request.headers.get("depth"))
     if depth == "infinity" and not settings.webdav_depth_infinity:
         depth = "1"
@@ -126,7 +128,7 @@ async def _propfind(settings: Settings, store: CloudFileStore, cloud_path: str, 
         raise CloudNotFound(cloud_path)
     pairs = [(href_for_cloud_path(settings.normalized_webdav_base(), item.path, item.is_folder), item)]
     if item.is_folder and depth != "0":
-        children = await store.list(cloud_path)
+        children = _filter_ignored_appledouble(settings, await store.list(cloud_path))
         pairs.extend((href_for_cloud_path(settings.normalized_webdav_base(), child.path, child.is_folder), child) for child in children)
     return Response(xml.multistatus(pairs), status_code=207, media_type="application/xml")
 
@@ -139,12 +141,14 @@ async def _head(store: CloudFileStore, cloud_path: str) -> Response:
     return Response(status_code=200, headers=headers)
 
 
-async def _get(store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+async def _get(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+    if _is_ignored_appledouble(settings, cloud_path):
+        raise CloudNotFound(cloud_path)
     item = await store.get_metadata(cloud_path)
     if item is not None and item.is_folder:
         accept = request.headers.get("accept", "")
         if "text/html" in accept:
-            return await _browser_listing(store, cloud_path, request)
+            return await _browser_listing(settings, store, cloud_path, request)
     if item is None or item.is_folder:
         raise CloudNotFound(cloud_path)
     byte_range = parse_range(request.headers.get("range"))
@@ -153,12 +157,21 @@ async def _get(store: CloudFileStore, cloud_path: str, request: Request) -> Resp
     if byte_range is not None and item.size is not None:
         start, end = _range_bounds(byte_range, item.size)
         headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, item.size)
-    return StreamingResponse(store.open_read(cloud_path, byte_range), status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
+    iterator = store.open_read(cloud_path, byte_range)
+    try:
+        first_chunk = await anext(iterator)
+    except StopAsyncIteration:
+        return Response(b"", status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
+    return StreamingResponse(_prepend_chunk(first_chunk, iterator), status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
 
 
 async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
     if not settings.webdav_allow_dotfiles and Path(cloud_path).name.startswith("."):
         raise CloudForbidden("dotfiles are disabled")
+    if _is_ignored_appledouble(settings, cloud_path):
+        async for _ in request.stream():
+            pass
+        return Response(status_code=201)
     max_bytes = settings.upload_max_file_mb * 1024 * 1024
     Path(settings.upload_spool_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix="upload-", suffix=".tmp", dir=settings.upload_spool_dir)
@@ -247,10 +260,16 @@ def _assert_writable(settings: Settings) -> None:
         raise CloudForbidden("gateway is in read-only mode")
 
 
-async def _browser_listing(store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+async def _prepend_chunk(first_chunk: bytes, iterator):
+    yield first_chunk
+    async for chunk in iterator:
+        yield chunk
+
+
+async def _browser_listing(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
     from html import escape
 
-    children = await store.list(cloud_path)
+    children = _filter_ignored_appledouble(settings, await store.list(cloud_path))
     display_path = cloud_path if cloud_path else "/"
 
     # Build breadcrumbs
@@ -333,3 +352,15 @@ def _fmt_bytes(size: int) -> str:
             return f"{v:.0f} {unit}" if unit == "B" else f"{v:.2f} {unit}"
         v /= 1024
     return f"{v:.2f} TB"
+
+
+def _is_ignored_appledouble(settings: Settings | None, cloud_path: str) -> bool:
+    if settings is None or not settings.webdav_ignore_appledouble:
+        return False
+    return Path(cloud_path).name.startswith("._")
+
+
+def _filter_ignored_appledouble(settings: Settings | None, items: list[CloudItemMetadata]) -> list[CloudItemMetadata]:
+    if settings is None or not settings.webdav_ignore_appledouble:
+        return items
+    return [item for item in items if not Path(item.path).name.startswith("._")]

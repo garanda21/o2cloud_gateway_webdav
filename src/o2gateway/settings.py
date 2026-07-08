@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     webdav_read_only: bool = False
     webdav_allow_dotfiles: bool = True
     webdav_depth_infinity: bool = False
+    webdav_ignore_appledouble: bool = True
 
     admin_enabled: bool = True
     admin_path_base: str = "/admin"

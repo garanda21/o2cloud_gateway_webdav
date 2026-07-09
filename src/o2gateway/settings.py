@@ -66,6 +66,10 @@ class Settings(BaseSettings):
 
     upload_max_file_mb: int = 10240
     upload_spool_dir: str = "/cache/uploads"
+    upload_confirm_retries: int = 4
+    upload_confirm_retry_delay_seconds: float = 1.25
+    upload_recent_cache_ttl_seconds: int = 120
+    upload_recent_cache_max_file_mb: int = 256
 
     download_timeout_seconds: int = 3600
     o2_http_timeout_seconds: int = 120
@@ -149,6 +153,7 @@ def ensure_directories(settings: Settings) -> None:
         settings.cache_dir,
         settings.data_dir,
         settings.upload_spool_dir,
+        str(Path(settings.cache_dir) / "recent-uploads"),
         str(Path(settings.log_file).parent),
         str(Path(settings.o2_session_file).parent),
     ]:

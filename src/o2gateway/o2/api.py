@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +19,8 @@ from o2gateway.o2.session import O2Cookie, O2Session, O2SessionStore
 from o2gateway.operations.errors import CloudError, CloudNotFound, CloudQuotaExceeded, CloudSessionExpired, CloudSessionMissing, CloudTimeout
 from o2gateway.settings import Settings
 
+
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 200
 MEDIA_LIST_FIELDS = [
@@ -184,7 +188,16 @@ class O2CloudApiClient:
             raise last_error
         raise CloudError("O2 created folder but did not return an id")
 
-    async def upload_file(self, parent_folder_id: str, name: str, local_path: str) -> O2Item:
+    async def upload_file(
+        self,
+        parent_folder_id: str,
+        name: str,
+        local_path: str,
+        *,
+        confirm_retries: int = 48,
+        confirm_delay_seconds: float = 1.25,
+    ) -> O2Item:
+        started = time.perf_counter()
         size = Path(local_path).stat().st_size
         metadata: dict[str, Any] = {
             "name": name,
@@ -202,12 +215,25 @@ class O2CloudApiClient:
         session = self._require_session()
         headers = self._session_headers(session)
         headers.update({"Accept": "*/*", "X-Requested-With": "XMLHttpRequest", "Connection": "keep-alive"})
+        post_started = time.perf_counter()
         with open(local_path, "rb") as handle:
             files = {
                 "data": (None, json.dumps({"data": metadata}, separators=(",", ":")), "application/json"),
                 "file": (name, handle, content_type or "application/octet-stream"),
             }
             response = await self.client.post(url, headers=headers, files=files)
+        post_duration_ms = round((time.perf_counter() - post_started) * 1000, 2)
+        logger.info(
+            "o2 upload post completed",
+            extra={
+                "provider": self.settings.cloud_provider,
+                "folderId": parent_folder_id,
+                "fileName": name,
+                "bytesIn": size,
+                "httpStatus": response.status_code,
+                "durationMs": post_duration_ms,
+            },
+        )
         self._capture_cookies(response, session)
         if response.status_code in (401, 403):
             self._mark_session_expired()
@@ -223,7 +249,30 @@ class O2CloudApiClient:
             parsed = _try_parse_item(response.json(), parent_folder_id, False, name)
         except Exception:
             pass
-        confirmed = await self.find_child_with_retries(parent_folder_id, name, False, expected_size=size, expected_id=parsed.id if parsed else None)
+        confirm_started = time.perf_counter()
+        confirmed = await self.find_child_with_retries(
+            parent_folder_id,
+            name,
+            False,
+            expected_size=size,
+            expected_id=parsed.id if parsed else None,
+            attempts=confirm_retries,
+            delay_seconds=confirm_delay_seconds,
+        )
+        logger.info(
+            "o2 upload confirmation completed",
+            extra={
+                "provider": self.settings.cloud_provider,
+                "folderId": parent_folder_id,
+                "fileName": name,
+                "bytesIn": size,
+                "confirmed": confirmed is not None,
+                "parsed": parsed is not None,
+                "confirmAttempts": confirm_retries,
+                "durationMs": round((time.perf_counter() - confirm_started) * 1000, 2),
+                "totalDurationMs": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
         return confirmed or parsed or O2Item("pending:upload:%s" % name, name, parent_folder_id, False, size=size)
 
     async def rename_or_move(self, item: O2Item, new_name: str, parent_folder_id: str) -> None:
@@ -313,12 +362,23 @@ class O2CloudApiClient:
                 return item
         return None
 
-    async def find_child_with_retries(self, parent_folder_id: str, name: str, is_folder: bool, expected_size: Optional[int] = None, expected_id: Optional[str] = None) -> Optional[O2Item]:
-        for _ in range(48):
+    async def find_child_with_retries(
+        self,
+        parent_folder_id: str,
+        name: str,
+        is_folder: bool,
+        expected_size: Optional[int] = None,
+        expected_id: Optional[str] = None,
+        *,
+        attempts: int = 48,
+        delay_seconds: float = 1.25,
+    ) -> Optional[O2Item]:
+        for attempt in range(max(0, attempts)):
             found = await self.find_child(parent_folder_id, name, is_folder)
             if found and (expected_size is None or found.size == expected_size) and (expected_id is None or found.id == expected_id):
                 return found
-            await asyncio.sleep(1.25)
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay_seconds)
         return None
 
     async def _load_folder(self, folder_id: str) -> list[O2Item]:

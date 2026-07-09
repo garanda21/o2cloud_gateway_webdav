@@ -67,7 +67,7 @@ def create_webdav_router(
             if method == "PUT":
                 _assert_writable(settings)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
-                return await _put(settings, store, cloud_path, request)
+                return await _put(settings, store, cloud_path, request, operation_id)
             if method == "MKCOL":
                 _assert_writable(settings)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
@@ -179,7 +179,7 @@ async def _get(settings: Settings, store: CloudFileStore, cloud_path: str, reque
     return StreamingResponse(_prepend_chunk(first_chunk, iterator), status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
 
 
-async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request, operation_id: str) -> Response:
     if not settings.webdav_allow_dotfiles and Path(cloud_path).name.startswith("."):
         raise CloudForbidden("dotfiles are disabled")
     if _is_ignored_appledouble(settings, cloud_path):
@@ -191,14 +191,35 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
     fd, tmp_path = tempfile.mkstemp(prefix="upload-", suffix=".tmp", dir=settings.upload_spool_dir)
     written = 0
     try:
+        read_started = time.perf_counter()
         with os.fdopen(fd, "wb") as handle:
             async for chunk in request.stream():
                 written += len(chunk)
                 if written > max_bytes:
                     raise CloudForbidden("upload exceeds configured limit")
                 handle.write(chunk)
+        logger.info(
+            "webdav upload body spooled",
+            extra={
+                "operation_id": operation_id,
+                "path": cloud_path,
+                "bytesIn": written,
+                "durationMs": round((time.perf_counter() - read_started) * 1000, 2),
+            },
+        )
         existed = await store.get_metadata(cloud_path)
+        upload_started = time.perf_counter()
         item = await store.upload(cloud_path, tmp_path, overwrite=True)
+        logger.info(
+            "webdav upload store completed",
+            extra={
+                "operation_id": operation_id,
+                "path": cloud_path,
+                "bytesIn": written,
+                "statusCode": 204 if existed else 201,
+                "durationMs": round((time.perf_counter() - upload_started) * 1000, 2),
+            },
+        )
         return Response(status_code=204 if existed else 201, headers={"ETag": item.etag or ""})
     finally:
         try:

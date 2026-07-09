@@ -56,7 +56,7 @@ class AppServices:
     def store(self) -> CloudFileStore:
         if self.settings.cloud_provider.lower() in {"o2", "movistar"}:
             if self._o2_store is None:
-                self._o2_store = O2CloudFileStore(self.o2_api, self.metadata_cache)
+                self._o2_store = O2CloudFileStore(self.o2_api, self.metadata_cache, self.settings)
             return self._o2_store
         if self._simulated_store is None:
             self._simulated_store = SimulatedCloudFileStore(self.settings.simulated_root)
@@ -109,7 +109,8 @@ def create_app() -> FastAPI:
 
 def run() -> None:
     settings = get_settings()
-    uvicorn.run("o2gateway.main:create_app", factory=True, host=settings.app_host, port=settings.app_port)
+    configure_logging(settings.log_level, settings.log_file)
+    uvicorn.run("o2gateway.main:create_app", factory=True, host=settings.app_host, port=settings.app_port, log_config=None)
 
 
 if __name__ == "__main__":

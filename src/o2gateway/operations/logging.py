@@ -37,6 +37,9 @@ SENSITIVE_KEYS = {
 }
 
 
+STANDARD_LOG_RECORD_KEYS = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+
+
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         is_cookie = {"name", "value", "domain", "path"}.issubset(value.keys())
@@ -64,6 +67,10 @@ class JsonFormatter(logging.Formatter):
         }
         if hasattr(record, "operation_id"):
             payload["operationId"] = getattr(record, "operation_id")
+        for key, value in record.__dict__.items():
+            if key in STANDARD_LOG_RECORD_KEYS or key == "operation_id" or key.startswith("_"):
+                continue
+            payload[key] = redact(value)
         if record.exc_info:
             payload["exception"] = redact(self.formatException(record.exc_info))
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -71,7 +78,9 @@ class JsonFormatter(logging.Formatter):
 
 def configure_logging(level: str, log_file: str) -> None:
     root = logging.getLogger()
-    root.handlers.clear()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        handler.close()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     stream = logging.StreamHandler(sys.stdout)

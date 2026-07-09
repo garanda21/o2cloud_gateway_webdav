@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from o2gateway.cloud.base import ByteRange, CloudItemMetadata, CloudQuota, basename, normalize_cloud_path, parent_path
 from o2gateway.o2.api import O2CloudApiClient, O2Item, to_cloud_metadata
-from o2gateway.operations.errors import CloudAlreadyExists, CloudNotFound
+from o2gateway.operations.errors import CloudAlreadyExists, CloudError, CloudNotFound
 from o2gateway.persistence.metadata_cache import MetadataCache
 from o2gateway.settings import Settings
 
@@ -205,7 +205,14 @@ class O2CloudFileStore:
         item = await self._item_for_path(normalized)
         if item is None:
             raise CloudNotFound(normalized)
-        await self.api.move_to_trash(item)
+        try:
+            await self.api.move_to_trash(item)
+        except CloudError as ex:
+            if not _is_transient_delete_error(ex):
+                raise
+            self._accept_deferred_delete(normalized, item, ex)
+            await self.cache.invalidate(normalized, parent_path(normalized))
+            return
         self._mark_deleted(normalized)
         self._path_to_item.pop(normalized, None)
         await self.cache.invalidate(normalized, parent_path(normalized))
@@ -396,8 +403,25 @@ class O2CloudFileStore:
     def _schedule_recent_delete(self, recent: RecentUpload) -> None:
         self._track_background_task(asyncio.create_task(self._delete_recent_remote(recent), name="o2-delete-recent-upload"))
 
+    def _schedule_item_delete(self, item: O2Item) -> None:
+        self._track_background_task(asyncio.create_task(self._delete_item_remote(item), name="o2-delete-item"))
+
     def _schedule_recent_move(self, recent: RecentUpload, dst: str, parent_folder_id: str) -> None:
         self._track_background_task(asyncio.create_task(self._move_recent_remote(recent, dst, parent_folder_id), name="o2-move-recent-upload"))
+
+    def _accept_deferred_delete(self, path: str, item: O2Item, error: CloudError) -> None:
+        self._mark_deleted(path)
+        logger.info(
+            "remote delete deferred",
+            extra={
+                "path": normalize_cloud_path(path),
+                "fileName": item.name,
+                "remoteId": item.id,
+                "reason": str(error),
+                "ttlSeconds": self.settings.delete_tombstone_ttl_seconds,
+            },
+        )
+        self._schedule_item_delete(item)
 
     def _track_background_task(self, task: asyncio.Task) -> None:
         self._background_tasks.add(task)
@@ -423,8 +447,35 @@ class O2CloudFileStore:
         if found is None:
             logger.warning("recent upload remote delete skipped; item was not confirmed", extra={"fileName": recent.remote_name, "remoteId": recent.item.id})
             return
-        await self.api.move_to_trash(found)
-        logger.info("recent upload deleted remotely", extra={"fileName": recent.remote_name, "remoteId": found.id})
+        deleted = await self._delete_item_with_retries(found)
+        if deleted:
+            logger.info("recent upload deleted remotely", extra={"fileName": recent.remote_name, "remoteId": found.id})
+
+    async def _delete_item_remote(self, item: O2Item) -> None:
+        deleted = await self._delete_item_with_retries(item)
+        if deleted:
+            logger.info("deferred remote delete completed", extra={"fileName": item.name, "remoteId": item.id})
+
+    async def _delete_item_with_retries(self, item: O2Item) -> bool:
+        deadline = time.time() + max(1, self.settings.delete_tombstone_ttl_seconds)
+        delay_seconds = 2.5
+        last_error: Optional[CloudError] = None
+        while True:
+            try:
+                await self.api.move_to_trash(item)
+                return True
+            except CloudError as ex:
+                if not _is_transient_delete_error(ex):
+                    raise
+                last_error = ex
+                if time.time() + delay_seconds > deadline:
+                    break
+                await asyncio.sleep(delay_seconds)
+        logger.warning(
+            "deferred remote delete expired",
+            extra={"fileName": item.name, "remoteId": item.id, "reason": str(last_error) if last_error else ""},
+        )
+        return False
 
     async def _move_recent_remote(self, recent: RecentUpload, dst: str, parent_folder_id: str) -> None:
         expected_id = None if recent.item.id.startswith("pending:") else recent.item.id
@@ -465,3 +516,8 @@ async def _read_local_file(local_path: str, byte_range: ByteRange = None) -> Asy
                 break
             remaining -= len(chunk)
             yield chunk
+
+
+def _is_transient_delete_error(error: CloudError) -> bool:
+    text = str(error).lower()
+    return "med-1017" in text or "not yet validated" in text or "media not yet validated" in text

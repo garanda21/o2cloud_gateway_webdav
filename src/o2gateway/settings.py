@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     upload_confirm_retry_delay_seconds: float = 1.25
     upload_recent_cache_ttl_seconds: int = 120
     upload_recent_cache_max_file_mb: int = 256
+    delete_tombstone_ttl_seconds: int = 60
 
     download_timeout_seconds: int = 3600
     o2_http_timeout_seconds: int = 120

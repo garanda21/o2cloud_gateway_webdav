@@ -41,6 +41,7 @@ class O2CloudFileStore:
         self.settings = settings
         self._path_to_item: dict[str, O2Item] = {}
         self._recent_uploads: dict[str, RecentUpload] = {}
+        self._deleted_paths: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()
         self._recent_upload_dir().mkdir(parents=True, exist_ok=True)
 
@@ -54,6 +55,9 @@ class O2CloudFileStore:
         output = []
         for item in items:
             child_path = _join(normalized, item.name)
+            if self._is_deleted(child_path):
+                self._path_to_item.pop(child_path, None)
+                continue
             recent = recent_children.get(child_path)
             if recent is not None and item.size != recent.expected_size:
                 continue
@@ -72,6 +76,8 @@ class O2CloudFileStore:
 
     async def get_metadata(self, path: str) -> Optional[CloudItemMetadata]:
         normalized = normalize_cloud_path(path)
+        if self._is_deleted(normalized):
+            return None
         recent = self._recent(normalized)
         if recent is not None:
             return recent.metadata
@@ -87,6 +93,8 @@ class O2CloudFileStore:
         return metadata
 
     async def open_read(self, path: str, byte_range: ByteRange = None) -> AsyncIterator[bytes]:
+        if self._is_deleted(path):
+            raise CloudNotFound(path)
         recent = self._recent(path)
         if recent is not None:
             async for chunk in _read_local_file(recent.local_path, byte_range):
@@ -100,6 +108,7 @@ class O2CloudFileStore:
 
     async def create_folder(self, path: str) -> CloudItemMetadata:
         normalized = normalize_cloud_path(path)
+        self._deleted_paths.pop(normalized, None)
         parent = await self._item_for_path(parent_path(normalized))
         if parent is None or not parent.is_folder:
             raise CloudNotFound(parent_path(normalized))
@@ -119,7 +128,7 @@ class O2CloudFileStore:
         if existing is not None and not overwrite:
             raise CloudAlreadyExists(normalized)
         cacheable = self._is_recent_cacheable(local_tmp_path)
-        confirm_retries = self.settings.upload_confirm_retries if cacheable else 48
+        confirm_retries = self.settings.upload_confirm_retries if self._uses_short_upload_confirmation(local_tmp_path) else 48
         uploaded = await self.api.upload_file(
             parent.id,
             basename(normalized),
@@ -176,6 +185,8 @@ class O2CloudFileStore:
         )
         self._path_to_item.pop(src, None)
         self._path_to_item[dst] = moved
+        self._mark_deleted(src)
+        self._deleted_paths.pop(dst, None)
         await self.cache.invalidate(src, dst, parent_path(src), parent_path(dst))
         metadata = to_cloud_metadata(moved, dst)
         await self.cache.put(metadata)
@@ -186,6 +197,7 @@ class O2CloudFileStore:
         recent = self._recent(normalized)
         if recent is not None:
             self._discard_recent(normalized)
+            self._mark_deleted(normalized)
             self._path_to_item.pop(normalized, None)
             await self.cache.invalidate(normalized, parent_path(normalized))
             self._schedule_recent_delete(recent)
@@ -194,6 +206,7 @@ class O2CloudFileStore:
         if item is None:
             raise CloudNotFound(normalized)
         await self.api.move_to_trash(item)
+        self._mark_deleted(normalized)
         self._path_to_item.pop(normalized, None)
         await self.cache.invalidate(normalized, parent_path(normalized))
 
@@ -202,6 +215,8 @@ class O2CloudFileStore:
 
     async def _item_for_path(self, path: str) -> Optional[O2Item]:
         normalized = normalize_cloud_path(path)
+        if self._is_deleted(normalized):
+            return None
         recent = self._recent(normalized)
         if recent is not None:
             return recent.item
@@ -216,6 +231,9 @@ class O2CloudFileStore:
             return None
         for child in await self.api.list_folder(parent.id):
             child_path = _join(parent_path(normalized), child.name)
+            if self._is_deleted(child_path):
+                self._path_to_item.pop(child_path, None)
+                continue
             self._path_to_item[child_path] = child
             if child.name.lower() == basename(normalized).lower():
                 return child
@@ -226,7 +244,28 @@ class O2CloudFileStore:
 
     def _is_recent_cacheable(self, local_tmp_path: str) -> bool:
         max_bytes = self.settings.upload_recent_cache_max_file_mb * 1024 * 1024
+        size = os.path.getsize(local_tmp_path)
+        return max_bytes > 0 and 0 < size <= max_bytes
+
+    def _uses_short_upload_confirmation(self, local_tmp_path: str) -> bool:
+        max_bytes = self.settings.upload_recent_cache_max_file_mb * 1024 * 1024
         return max_bytes > 0 and os.path.getsize(local_tmp_path) <= max_bytes
+
+    def _mark_deleted(self, path: str) -> None:
+        normalized = normalize_cloud_path(path)
+        self._deleted_paths[normalized] = time.time() + self.settings.delete_tombstone_ttl_seconds
+        self._recent_uploads.pop(normalized, None)
+        self._path_to_item.pop(normalized, None)
+
+    def _is_deleted(self, path: str) -> bool:
+        normalized = normalize_cloud_path(path)
+        expires_at = self._deleted_paths.get(normalized)
+        if expires_at is None:
+            return False
+        if time.time() >= expires_at:
+            self._deleted_paths.pop(normalized, None)
+            return False
+        return True
 
     def _recent(self, path: str) -> Optional[RecentUpload]:
         normalized = normalize_cloud_path(path)
@@ -297,10 +336,12 @@ class O2CloudFileStore:
         existing = await self.get_metadata(dst)
         if existing is not None and not overwrite:
             raise CloudAlreadyExists(dst)
+        self._deleted_paths.pop(dst, None)
         if existing is not None:
             destination_recent = self._recent(dst)
             if destination_recent is not None:
                 self._discard_recent(dst)
+                self._mark_deleted(dst)
                 self._schedule_recent_delete(destination_recent)
             else:
                 existing_item = await self._item_for_path(dst)
@@ -336,6 +377,8 @@ class O2CloudFileStore:
         )
         self._path_to_item.pop(src, None)
         self._path_to_item[dst] = item
+        self._mark_deleted(src)
+        self._deleted_paths.pop(dst, None)
         await self.cache.invalidate(src, dst, parent_path(src), parent_path(dst))
         await self.cache.put(metadata)
         self._schedule_recent_move(recent, dst, parent.id)

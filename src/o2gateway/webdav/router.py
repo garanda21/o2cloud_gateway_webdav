@@ -74,6 +74,8 @@ def create_webdav_router(
                 return await _mkcol(store, cloud_path)
             if method == "DELETE":
                 _assert_writable(settings)
+                if _is_ignored_appledouble(settings, cloud_path):
+                    return Response(status_code=204)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
                 return await _delete(store, cloud_path)
             if method == "MOVE":

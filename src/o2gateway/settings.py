@@ -66,11 +66,17 @@ class Settings(BaseSettings):
 
     upload_max_file_mb: int = 10240
     upload_spool_dir: str = "/cache/uploads"
-    upload_confirm_retries: int = 4
-    upload_confirm_retry_delay_seconds: float = 1.25
-    upload_recent_cache_ttl_seconds: int = 120
+    # TTL de seguridad de las entradas del overlay local (placeholders de Finder y
+    # subidas recientes); normalmente se retiran antes, cuando el listado remoto
+    # las refleja. El listado de Movistar puede tardar >60s en ponerse al día.
+    upload_recent_cache_ttl_seconds: int = 900
     upload_recent_cache_max_file_mb: int = 256
-    delete_tombstone_ttl_seconds: int = 60
+    # Presupuesto de reintentos para operaciones que chocan con la ventana de
+    # validación del proveedor (MED-1017, ~4-10s tras subir).
+    upload_overwrite_retry_seconds: float = 20.0
+    # Vida máxima del tombstone tras un DELETE y presupuesto del borrado remoto
+    # diferido; también cubre la latencia del listado remoto tras borrar.
+    delete_tombstone_ttl_seconds: int = 300
 
     download_timeout_seconds: int = 3600
     o2_http_timeout_seconds: int = 120

@@ -5,15 +5,15 @@ import logging
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Callable, Coroutine, Optional
 from uuid import uuid4
 
 from o2gateway.cloud.base import ByteRange, CloudItemMetadata, CloudQuota, basename, normalize_cloud_path, parent_path
 from o2gateway.o2.api import O2CloudApiClient, O2Item, to_cloud_metadata
-from o2gateway.operations.errors import CloudAlreadyExists, CloudError, CloudNotFound
+from o2gateway.operations.errors import CloudAlreadyExists, CloudMediaNotValidated, CloudNotFound
 from o2gateway.persistence.metadata_cache import MetadataCache
 from o2gateway.settings import Settings
 
@@ -21,17 +21,25 @@ from o2gateway.settings import Settings
 logger = logging.getLogger(__name__)
 LOCAL_READ_CHUNK_SIZE = 1024 * 1024
 
+# Estados del overlay local. El proveedor (Funambol) valida los media de forma
+# asíncrona (~4-10s, MED-1017 mientras tanto) y su listado de carpeta puede
+# tardar >60s en reflejar cambios, así que el overlay es la fuente de verdad
+# para el cliente WebDAV hasta que el remoto se pone al día.
+PENDING_CREATE = "pending_create"  # placeholder local (PUT de 0 bytes de Finder); nunca subido
+UPLOADED = "uploaded"  # subido con éxito; visible desde overlay hasta que el listado remoto lo muestre
+PENDING_DELETE = "pending_delete"  # borrado aceptado; oculto hasta que el remoto deje de listarlo
+
 
 @dataclass
-class RecentUpload:
+class OverlayEntry:
+    state: str
     item: O2Item
     metadata: CloudItemMetadata
-    local_path: str
-    parent_folder_id: str
-    remote_parent_folder_id: str
-    remote_name: str
-    expected_size: int
+    local_path: Optional[str]
+    remote_id: Optional[str]
+    parent_folder_id: Optional[str]
     expires_at: float
+    remote_deleted: bool = False
 
 
 class O2CloudFileStore:
@@ -40,10 +48,12 @@ class O2CloudFileStore:
         self.cache = cache
         self.settings = settings
         self._path_to_item: dict[str, O2Item] = {}
-        self._recent_uploads: dict[str, RecentUpload] = {}
-        self._deleted_paths: dict[str, float] = {}
+        self._overlay: dict[str, OverlayEntry] = {}
+        self._hidden_remote_ids: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()
-        self._recent_upload_dir().mkdir(parents=True, exist_ok=True)
+        self._spool_dir().mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------ lectura
 
     async def list(self, path: str) -> list[CloudItemMetadata]:
         normalized = normalize_cloud_path(path)
@@ -51,36 +61,44 @@ class O2CloudFileStore:
         if folder is None or not folder.is_folder:
             raise CloudNotFound(path)
         items = await self.api.list_folder(folder.id)
-        recent_children = self._recent_children(normalized)
-        output = []
+        overlay_children = self._overlay_children(normalized)
+        listed_ids = {item.id for item in items}
+        output: list[CloudItemMetadata] = []
+        covered_paths: set[str] = set()
         for item in items:
             child_path = _join(normalized, item.name)
-            if self._is_deleted(child_path):
-                self._path_to_item.pop(child_path, None)
+            if self._is_hidden_remote_id(item.id):
                 continue
-            recent = recent_children.get(child_path)
-            if recent is not None and item.size != recent.expected_size:
-                continue
-            if recent is not None:
-                self._discard_recent(child_path)
-                recent_children.pop(child_path, None)
+            entry = overlay_children.get(child_path)
+            if entry is not None:
+                if entry.state == PENDING_DELETE:
+                    continue
+                if entry.state == UPLOADED and item.id == entry.remote_id and item.size == entry.metadata.size:
+                    # El listado remoto ya refleja la subida: el overlay sobra.
+                    self._drop_entry(child_path)
+                    overlay_children.pop(child_path, None)
+                else:
+                    # El overlay gana (placeholder local o fila remota desfasada).
+                    continue
             self._path_to_item[child_path] = item
             metadata = to_cloud_metadata(item, child_path)
             await self.cache.put(metadata)
             output.append(metadata)
-        for child_path, recent in recent_children.items():
-            self._path_to_item[child_path] = recent.item
-            await self.cache.put(recent.metadata)
-            output.append(recent.metadata)
+            covered_paths.add(child_path)
+        for child_path, entry in overlay_children.items():
+            if child_path in covered_paths or entry.state == PENDING_DELETE:
+                continue
+            self._path_to_item[child_path] = entry.item
+            await self.cache.put(entry.metadata)
+            output.append(entry.metadata)
+        self._sweep_settled_tombstones(normalized, listed_ids)
         return output
 
     async def get_metadata(self, path: str) -> Optional[CloudItemMetadata]:
         normalized = normalize_cloud_path(path)
-        if self._is_deleted(normalized):
-            return None
-        recent = self._recent(normalized)
-        if recent is not None:
-            return recent.metadata
+        entry = self._entry(normalized)
+        if entry is not None:
+            return None if entry.state == PENDING_DELETE else entry.metadata
         cached = await self.cache.get(normalized)
         if cached is not None:
             return cached
@@ -93,22 +111,38 @@ class O2CloudFileStore:
         return metadata
 
     async def open_read(self, path: str, byte_range: ByteRange = None) -> AsyncIterator[bytes]:
-        if self._is_deleted(path):
-            raise CloudNotFound(path)
-        recent = self._recent(path)
-        if recent is not None:
-            async for chunk in _read_local_file(recent.local_path, byte_range):
+        normalized = normalize_cloud_path(path)
+        entry = self._entry(normalized)
+        if entry is not None:
+            if entry.state == PENDING_DELETE:
+                raise CloudNotFound(path)
+            if entry.local_path is not None:
+                async for chunk in _read_local_file(entry.local_path, byte_range):
+                    yield chunk
+                return
+            if (entry.metadata.size or 0) == 0:
+                return
+            # Subida grande sin copia local: el remoto sirve descargas incluso
+            # durante la ventana de validación.
+            async for chunk in self.api.download(entry.item, byte_range):
                 yield chunk
             return
-        item = await self._item_for_path(path)
+        item = await self._item_for_path(normalized)
         if item is None or item.is_folder:
             raise CloudNotFound(path)
         async for chunk in self.api.download(item, byte_range):
             yield chunk
 
+    async def quota(self) -> CloudQuota:
+        return await self.api.storage_info()
+
+    # ------------------------------------------------------------------ escritura
+
     async def create_folder(self, path: str) -> CloudItemMetadata:
         normalized = normalize_cloud_path(path)
-        self._deleted_paths.pop(normalized, None)
+        entry = self._entry(normalized)
+        if entry is not None and entry.state == PENDING_DELETE:
+            self._drop_entry(normalized)
         parent = await self._item_for_path(parent_path(normalized))
         if parent is None or not parent.is_folder:
             raise CloudNotFound(parent_path(normalized))
@@ -124,109 +158,255 @@ class O2CloudFileStore:
         parent = await self._item_for_path(parent_path(normalized))
         if parent is None or not parent.is_folder:
             raise CloudNotFound(parent_path(normalized))
-        existing = await self._item_for_path(normalized)
-        if existing is not None and not overwrite:
-            raise CloudAlreadyExists(normalized)
-        cacheable = self._is_recent_cacheable(local_tmp_path)
-        confirm_retries = self.settings.upload_confirm_retries if self._uses_short_upload_confirmation(local_tmp_path) else 48
-        uploaded = await self.api.upload_file(
-            parent.id,
-            basename(normalized),
-            local_tmp_path,
-            confirm_retries=confirm_retries,
-            confirm_delay_seconds=self.settings.upload_confirm_retry_delay_seconds,
-        )
-        if existing is not None and existing.id != uploaded.id:
-            try:
-                await self.api.move_to_trash(existing)
-            except Exception:
-                pass
+        size = os.path.getsize(local_tmp_path)
+        remote_target = await self._remote_target_id(normalized, overwrite)
+        if size == 0:
+            # Placeholder de Finder (crea con PUT vacío y manda el contenido en un
+            # segundo PUT). Nunca se sube al proveedor: un media de 0 bytes queda
+            # ~10s en ventana MED-1017 y bloquea el flujo posterior del cliente.
+            return self._store_pending_create(normalized, parent.id, remote_target)
+        uploaded = await self._upload_with_validation_retry(parent.id, basename(normalized), local_tmp_path, remote_target)
+        entry = self._store_uploaded(normalized, uploaded, local_tmp_path, parent.id)
         await self.cache.invalidate(parent_path(normalized), normalized)
-        if cacheable:
-            recent = self._store_recent_upload(normalized, uploaded, local_tmp_path, parent.id)
-            self._path_to_item[normalized] = recent.item
-            metadata = recent.metadata
-        else:
-            self._path_to_item[normalized] = uploaded
-            metadata = to_cloud_metadata(uploaded, normalized)
-        await self.cache.put(metadata)
-        return metadata
+        await self.cache.put(entry.metadata)
+        return entry.metadata
+
+    async def delete(self, path: str, *, soft_delete: bool = True) -> None:
+        normalized = normalize_cloud_path(path)
+        entry = self._entry(normalized)
+        if entry is not None:
+            if entry.state == PENDING_DELETE:
+                return
+            remote_id = entry.remote_id
+            item = entry.item
+            self._drop_entry(normalized)
+            await self.cache.invalidate(normalized, parent_path(normalized))
+            if entry.state == PENDING_CREATE and remote_id is None:
+                # El placeholder nunca llegó al proveedor: borrado puramente local.
+                return
+            if remote_id is None:
+                # Subida sin id remoto (formas de respuesta antiguas de O2): localizar
+                # por nombre+tamaño antes de borrar para no tocar un archivo ajeno.
+                self._store_tombstone(normalized, item, None)
+                self._schedule(self._find_and_delete_remote(entry), "o2-find-delete")
+                return
+            self._store_tombstone(normalized, item, remote_id)
+            self._schedule(self._delete_remote(normalized, item), "o2-delete-remote")
+            return
+        item = await self._item_for_path(normalized)
+        if item is None:
+            raise CloudNotFound(normalized)
+        if item.is_folder:
+            await self.api.move_to_trash(item)
+            self._path_to_item.pop(normalized, None)
+            await self.cache.invalidate(normalized, parent_path(normalized))
+            return
+        self._store_tombstone(normalized, item, item.id)
+        self._path_to_item.pop(normalized, None)
+        await self.cache.invalidate(normalized, parent_path(normalized))
+        self._schedule(self._delete_remote(normalized, item), "o2-delete-remote")
 
     async def move(self, source: str, destination: str, *, overwrite: bool = False) -> CloudItemMetadata:
         src = normalize_cloud_path(source)
         dst = normalize_cloud_path(destination)
-        recent = self._recent(src)
-        if recent is not None:
-            return await self._move_recent(recent, src, dst, overwrite)
-        item = await self._item_for_path(src)
-        if item is None:
-            raise CloudNotFound(src)
+        if src == dst:
+            existing = await self.get_metadata(src)
+            if existing is None:
+                raise CloudNotFound(src)
+            return existing
         parent = await self._item_for_path(parent_path(dst))
         if parent is None or not parent.is_folder:
             raise CloudNotFound(parent_path(dst))
-        existing = await self._item_for_path(dst)
+        existing = await self.get_metadata(dst)
         if existing is not None:
             if not overwrite:
                 raise CloudAlreadyExists(dst)
-            await self.api.move_to_trash(existing)
-        await self.api.rename_or_move(item, basename(dst), parent.id)
-        moved = O2Item(
-            id=item.id,
-            name=basename(dst),
-            parent_id=parent.id,
-            is_folder=item.is_folder,
-            size=item.size,
-            modified_at=item.modified_at,
-            direct_url=item.direct_url,
-            media_kind=item.media_kind,
-            fingerprint=item.fingerprint,
-            node=item.node,
-            download_token=item.download_token,
+            await self.delete(dst)
+        entry = self._entry(src)
+        if entry is not None and entry.state != PENDING_DELETE:
+            return await self._move_entry(entry, src, dst, parent)
+        item = await self._item_for_path(src)
+        if item is None:
+            raise CloudNotFound(src)
+        await self._retry_while_not_validated(
+            lambda: self.api.rename_or_move(item, basename(dst), parent.id),
+            budget_seconds=self.settings.upload_overwrite_retry_seconds,
         )
+        moved = replace(item, name=basename(dst), parent_id=parent.id)
         self._path_to_item.pop(src, None)
         self._path_to_item[dst] = moved
-        self._mark_deleted(src)
-        self._deleted_paths.pop(dst, None)
         await self.cache.invalidate(src, dst, parent_path(src), parent_path(dst))
         metadata = to_cloud_metadata(moved, dst)
         await self.cache.put(metadata)
         return metadata
 
-    async def delete(self, path: str, *, soft_delete: bool = True) -> None:
-        normalized = normalize_cloud_path(path)
-        recent = self._recent(normalized)
-        if recent is not None:
-            self._discard_recent(normalized)
-            self._mark_deleted(normalized)
-            self._path_to_item.pop(normalized, None)
-            await self.cache.invalidate(normalized, parent_path(normalized))
-            self._schedule_recent_delete(recent)
-            return
-        item = await self._item_for_path(normalized)
-        if item is None:
-            raise CloudNotFound(normalized)
-        try:
-            await self.api.move_to_trash(item)
-        except CloudError as ex:
-            if not _is_transient_delete_error(ex):
-                raise
-            self._accept_deferred_delete(normalized, item, ex)
-            await self.cache.invalidate(normalized, parent_path(normalized))
-            return
-        self._mark_deleted(normalized)
-        self._path_to_item.pop(normalized, None)
-        await self.cache.invalidate(normalized, parent_path(normalized))
+    # ------------------------------------------------------------------ overlay
 
-    async def quota(self) -> CloudQuota:
-        return await self.api.storage_info()
+    def _entry(self, path: str) -> Optional[OverlayEntry]:
+        normalized = normalize_cloud_path(path)
+        entry = self._overlay.get(normalized)
+        if entry is None:
+            return None
+        if time.time() >= entry.expires_at:
+            if entry.state == PENDING_CREATE:
+                logger.warning(
+                    "pending create expired without content",
+                    extra={"path": normalized, "remoteId": entry.remote_id},
+                )
+            self._drop_entry(normalized)
+            return None
+        return entry
+
+    def _overlay_children(self, folder_path: str) -> dict[str, OverlayEntry]:
+        normalized = normalize_cloud_path(folder_path)
+        return {
+            path: entry
+            for path in list(self._overlay)
+            if parent_path(path) == normalized and (entry := self._entry(path)) is not None
+        }
+
+    def _drop_entry(self, path: str) -> None:
+        normalized = normalize_cloud_path(path)
+        entry = self._overlay.pop(normalized, None)
+        self._path_to_item.pop(normalized, None)
+        if entry is None or entry.local_path is None:
+            return
+        try:
+            os.unlink(entry.local_path)
+        except OSError:
+            pass
+
+    def _is_hidden_remote_id(self, remote_id: str) -> bool:
+        expires_at = self._hidden_remote_ids.get(remote_id)
+        if expires_at is None:
+            return False
+        if time.time() >= expires_at:
+            self._hidden_remote_ids.pop(remote_id, None)
+            return False
+        return True
+
+    def _sweep_settled_tombstones(self, folder_path: str, listed_ids: set[str]) -> None:
+        for path in list(self._overlay):
+            if parent_path(path) != folder_path:
+                continue
+            entry = self._overlay.get(path)
+            if entry is None or entry.state != PENDING_DELETE or not entry.remote_deleted:
+                continue
+            if entry.remote_id is None or entry.remote_id not in listed_ids:
+                self._drop_entry(path)
+                if entry.remote_id is not None:
+                    self._hidden_remote_ids.pop(entry.remote_id, None)
+
+    def _store_pending_create(self, path: str, parent_folder_id: str, remote_target: Optional[str]) -> CloudItemMetadata:
+        normalized = normalize_cloud_path(path)
+        self._drop_entry(normalized)
+        item = O2Item(
+            id=remote_target or ("pending:create:%s" % uuid4().hex),
+            name=basename(normalized),
+            parent_id=parent_folder_id,
+            is_folder=False,
+            size=0,
+            modified_at=datetime.now(timezone.utc),
+        )
+        metadata = to_cloud_metadata(item, normalized)
+        self._overlay[normalized] = OverlayEntry(
+            state=PENDING_CREATE,
+            item=item,
+            metadata=metadata,
+            local_path=None,
+            remote_id=remote_target,
+            parent_folder_id=parent_folder_id,
+            expires_at=time.time() + self.settings.upload_recent_cache_ttl_seconds,
+        )
+        self._path_to_item[normalized] = item
+        logger.info("pending create stored", extra={"path": normalized, "remoteId": remote_target})
+        return metadata
+
+    def _store_uploaded(self, path: str, uploaded: O2Item, local_tmp_path: str, parent_folder_id: str) -> OverlayEntry:
+        normalized = normalize_cloud_path(path)
+        self._drop_entry(normalized)
+        size = os.path.getsize(local_tmp_path)
+        local_copy: Optional[str] = None
+        if size <= self.settings.upload_recent_cache_max_file_mb * 1024 * 1024:
+            target = self._spool_dir() / ("upload-%s.tmp" % uuid4().hex)
+            shutil.copyfile(local_tmp_path, target)
+            local_copy = str(target)
+        remote_id = None if uploaded.id.startswith("pending:") else uploaded.id
+        item = replace(uploaded, name=basename(normalized), parent_id=parent_folder_id, size=size)
+        metadata = to_cloud_metadata(item, normalized)
+        entry = OverlayEntry(
+            state=UPLOADED,
+            item=item,
+            metadata=metadata,
+            local_path=local_copy,
+            remote_id=remote_id,
+            parent_folder_id=parent_folder_id,
+            expires_at=time.time() + self.settings.upload_recent_cache_ttl_seconds,
+        )
+        self._overlay[normalized] = entry
+        self._path_to_item[normalized] = item
+        logger.info(
+            "upload stored in overlay",
+            extra={"path": normalized, "remoteId": remote_id, "bytesIn": size, "localCopy": local_copy is not None},
+        )
+        return entry
+
+    def _store_tombstone(self, path: str, item: O2Item, remote_id: Optional[str]) -> None:
+        normalized = normalize_cloud_path(path)
+        expires_at = time.time() + self.settings.delete_tombstone_ttl_seconds
+        self._overlay[normalized] = OverlayEntry(
+            state=PENDING_DELETE,
+            item=item,
+            metadata=to_cloud_metadata(item, normalized),
+            local_path=None,
+            remote_id=remote_id,
+            parent_folder_id=item.parent_id,
+            expires_at=expires_at,
+        )
+        self._path_to_item.pop(normalized, None)
+        if remote_id is not None:
+            self._hidden_remote_ids[remote_id] = expires_at
+
+    # ------------------------------------------------------------------ remoto
+
+    async def _remote_target_id(self, path: str, overwrite: bool) -> Optional[str]:
+        entry = self._entry(path)
+        if entry is not None and entry.state != PENDING_DELETE:
+            if not overwrite:
+                raise CloudAlreadyExists(path)
+            return entry.remote_id
+        existing = await self._item_for_path(path)
+        if existing is None or existing.is_folder:
+            return None
+        if not overwrite:
+            raise CloudAlreadyExists(path)
+        return existing.id
+
+    async def _upload_with_validation_retry(
+        self, parent_folder_id: str, name: str, local_tmp_path: str, media_id: Optional[str]
+    ) -> O2Item:
+        # Sobrescribir por id falla con MED-1017 si el destino sigue en ventana de
+        # validación (~4-10s); reintentar dentro del presupuesto lo cubre.
+        return await self._retry_while_not_validated(
+            lambda: self.api.upload_file(parent_folder_id, name, local_tmp_path, media_id=media_id),
+            budget_seconds=self.settings.upload_overwrite_retry_seconds,
+        )
+
+    async def _retry_while_not_validated(self, operation: Callable[[], Coroutine], *, budget_seconds: float, delay_seconds: float = 1.5):
+        deadline = time.time() + max(0.0, budget_seconds)
+        while True:
+            try:
+                return await operation()
+            except CloudMediaNotValidated:
+                if time.time() + delay_seconds > deadline:
+                    raise
+                await asyncio.sleep(delay_seconds)
 
     async def _item_for_path(self, path: str) -> Optional[O2Item]:
         normalized = normalize_cloud_path(path)
-        if self._is_deleted(normalized):
-            return None
-        recent = self._recent(normalized)
-        if recent is not None:
-            return recent.item
+        entry = self._entry(normalized)
+        if entry is not None:
+            return None if entry.state == PENDING_DELETE else entry.item
         if normalized in self._path_to_item:
             return self._path_to_item[normalized]
         if normalized == "/":
@@ -236,194 +416,93 @@ class O2CloudFileStore:
         parent = await self._item_for_path(parent_path(normalized))
         if parent is None or not parent.is_folder:
             return None
+        result: Optional[O2Item] = None
         for child in await self.api.list_folder(parent.id):
+            if self._is_hidden_remote_id(child.id):
+                continue
             child_path = _join(parent_path(normalized), child.name)
-            if self._is_deleted(child_path):
-                self._path_to_item.pop(child_path, None)
+            child_entry = self._entry(child_path)
+            if child_entry is not None:
                 continue
             self._path_to_item[child_path] = child
             if child.name.lower() == basename(normalized).lower():
-                return child
-        return None
+                result = child
+        return result
 
-    def _recent_upload_dir(self) -> Path:
+    def _spool_dir(self) -> Path:
         return Path(self.settings.cache_dir) / "recent-uploads"
 
-    def _is_recent_cacheable(self, local_tmp_path: str) -> bool:
-        max_bytes = self.settings.upload_recent_cache_max_file_mb * 1024 * 1024
-        size = os.path.getsize(local_tmp_path)
-        return max_bytes > 0 and 0 < size <= max_bytes
-
-    def _uses_short_upload_confirmation(self, local_tmp_path: str) -> bool:
-        max_bytes = self.settings.upload_recent_cache_max_file_mb * 1024 * 1024
-        return max_bytes > 0 and os.path.getsize(local_tmp_path) <= max_bytes
-
-    def _mark_deleted(self, path: str) -> None:
-        normalized = normalize_cloud_path(path)
-        self._deleted_paths[normalized] = time.time() + self.settings.delete_tombstone_ttl_seconds
-        self._recent_uploads.pop(normalized, None)
-        self._path_to_item.pop(normalized, None)
-
-    def _is_deleted(self, path: str) -> bool:
-        normalized = normalize_cloud_path(path)
-        expires_at = self._deleted_paths.get(normalized)
-        if expires_at is None:
-            return False
-        if time.time() >= expires_at:
-            self._deleted_paths.pop(normalized, None)
-            return False
-        return True
-
-    def _recent(self, path: str) -> Optional[RecentUpload]:
-        normalized = normalize_cloud_path(path)
-        recent = self._recent_uploads.get(normalized)
-        if recent is None:
-            return None
-        if time.time() >= recent.expires_at or not os.path.exists(recent.local_path):
-            self._discard_recent(normalized)
-            return None
-        return recent
-
-    def _recent_children(self, folder_path: str) -> dict[str, RecentUpload]:
-        normalized = normalize_cloud_path(folder_path)
-        return {
-            path: recent
-            for path, recent in list(self._recent_uploads.items())
-            if parent_path(path) == normalized and self._recent(path) is not None
-        }
-
-    def _store_recent_upload(self, path: str, uploaded: O2Item, local_tmp_path: str, parent_folder_id: str) -> RecentUpload:
-        normalized = normalize_cloud_path(path)
-        target = self._recent_upload_dir() / ("upload-%s.tmp" % uuid4().hex)
-        shutil.copyfile(local_tmp_path, target)
-        size = os.path.getsize(target)
-        item = O2Item(
-            id=uploaded.id,
-            name=basename(normalized),
-            parent_id=parent_folder_id,
-            is_folder=False,
-            size=size,
-            modified_at=datetime.now(timezone.utc),
-            direct_url=uploaded.direct_url,
-            media_kind=uploaded.media_kind,
-            fingerprint=uploaded.fingerprint,
-            node=uploaded.node,
-            download_token=uploaded.download_token,
-        )
-        metadata = to_cloud_metadata(item, normalized)
-        recent = RecentUpload(
-            item=item,
-            metadata=metadata,
-            local_path=str(target),
-            parent_folder_id=parent_folder_id,
-            remote_parent_folder_id=parent_folder_id,
-            remote_name=basename(normalized),
-            expected_size=size,
-            expires_at=time.time() + self.settings.upload_recent_cache_ttl_seconds,
-        )
-        self._discard_recent(normalized)
-        self._recent_uploads[normalized] = recent
-        logger.info(
-            "recent upload cached",
-            extra={
-                "path": normalized,
-                "remoteId": uploaded.id,
-                "bytesIn": size,
-                "ttlSeconds": self.settings.upload_recent_cache_ttl_seconds,
-            },
-        )
-        return recent
-
-    async def _move_recent(self, recent: RecentUpload, src: str, dst: str, overwrite: bool) -> CloudItemMetadata:
-        if src == dst:
-            return recent.metadata
-        parent = await self._item_for_path(parent_path(dst))
-        if parent is None or not parent.is_folder:
-            raise CloudNotFound(parent_path(dst))
-        existing = await self.get_metadata(dst)
-        if existing is not None and not overwrite:
-            raise CloudAlreadyExists(dst)
-        self._deleted_paths.pop(dst, None)
-        if existing is not None:
-            destination_recent = self._recent(dst)
-            if destination_recent is not None:
-                self._discard_recent(dst)
-                self._mark_deleted(dst)
-                self._schedule_recent_delete(destination_recent)
-            else:
-                existing_item = await self._item_for_path(dst)
-                try:
-                    if existing_item is not None:
-                        await self.api.move_to_trash(existing_item)
-                except Exception:
-                    pass
-        item = O2Item(
-            id=recent.item.id,
-            name=basename(dst),
-            parent_id=parent.id,
-            is_folder=False,
-            size=recent.expected_size,
-            modified_at=datetime.now(timezone.utc),
-            direct_url=recent.item.direct_url,
-            media_kind=recent.item.media_kind,
-            fingerprint=recent.item.fingerprint,
-            node=recent.item.node,
-            download_token=recent.item.download_token,
-        )
+    async def _move_entry(self, entry: OverlayEntry, src: str, dst: str, parent: O2Item) -> CloudItemMetadata:
+        item = replace(entry.item, name=basename(dst), parent_id=parent.id)
         metadata = to_cloud_metadata(item, dst)
-        self._recent_uploads.pop(src, None)
-        self._recent_uploads[dst] = RecentUpload(
+        self._overlay.pop(src, None)
+        self._overlay[dst] = OverlayEntry(
+            state=entry.state,
             item=item,
             metadata=metadata,
-            local_path=recent.local_path,
+            local_path=entry.local_path,
+            remote_id=entry.remote_id,
             parent_folder_id=parent.id,
-            remote_parent_folder_id=recent.remote_parent_folder_id,
-            remote_name=recent.remote_name,
-            expected_size=recent.expected_size,
-            expires_at=recent.expires_at,
+            expires_at=entry.expires_at,
         )
         self._path_to_item.pop(src, None)
         self._path_to_item[dst] = item
-        self._mark_deleted(src)
-        self._deleted_paths.pop(dst, None)
         await self.cache.invalidate(src, dst, parent_path(src), parent_path(dst))
         await self.cache.put(metadata)
-        self._schedule_recent_move(recent, dst, parent.id)
+        if entry.state == UPLOADED and entry.remote_id is not None:
+            remote_item = replace(entry.item, id=entry.remote_id)
+            self._schedule(
+                self._retry_while_not_validated(
+                    lambda: self.api.rename_or_move(remote_item, basename(dst), parent.id),
+                    budget_seconds=self.settings.delete_tombstone_ttl_seconds,
+                ),
+                "o2-rename-remote",
+            )
+        # PENDING_CREATE nunca llegó al remoto: renombrar es puramente local.
         return metadata
 
-    def _discard_recent(self, path: str) -> None:
-        recent = self._recent_uploads.pop(normalize_cloud_path(path), None)
-        if recent is None:
+    async def _delete_remote(self, path: str, item: O2Item) -> None:
+        deadline = time.time() + max(1.0, float(self.settings.delete_tombstone_ttl_seconds))
+        delay_seconds = 2.5
+        while True:
+            try:
+                await self.api.move_to_trash(item)
+                break
+            except CloudMediaNotValidated as ex:
+                if time.time() + delay_seconds > deadline:
+                    logger.warning(
+                        "deferred remote delete expired",
+                        extra={"fileName": item.name, "remoteId": item.id, "reason": str(ex)},
+                    )
+                    return
+                await asyncio.sleep(delay_seconds)
+        normalized = normalize_cloud_path(path)
+        entry = self._overlay.get(normalized)
+        if entry is not None and entry.state == PENDING_DELETE:
+            entry.remote_deleted = True
+        logger.info("remote delete completed", extra={"fileName": item.name, "remoteId": item.id})
+
+    async def _find_and_delete_remote(self, entry: OverlayEntry) -> None:
+        if entry.parent_folder_id is None:
             return
-        try:
-            os.unlink(recent.local_path)
-        except OSError:
-            pass
-
-    def _schedule_recent_delete(self, recent: RecentUpload) -> None:
-        self._track_background_task(asyncio.create_task(self._delete_recent_remote(recent), name="o2-delete-recent-upload"))
-
-    def _schedule_item_delete(self, item: O2Item) -> None:
-        self._track_background_task(asyncio.create_task(self._delete_item_remote(item), name="o2-delete-item"))
-
-    def _schedule_recent_move(self, recent: RecentUpload, dst: str, parent_folder_id: str) -> None:
-        self._track_background_task(asyncio.create_task(self._move_recent_remote(recent, dst, parent_folder_id), name="o2-move-recent-upload"))
-
-    def _accept_deferred_delete(self, path: str, item: O2Item, error: CloudError) -> None:
-        self._mark_deleted(path)
-        logger.info(
-            "remote delete deferred",
-            extra={
-                "path": normalize_cloud_path(path),
-                "fileName": item.name,
-                "remoteId": item.id,
-                "reason": str(error),
-                "ttlSeconds": self.settings.delete_tombstone_ttl_seconds,
-            },
+        found = await self.api.find_child_with_retries(
+            entry.parent_folder_id,
+            entry.item.name,
+            False,
+            expected_size=entry.metadata.size,
+            attempts=8,
+            delay_seconds=2.5,
         )
-        self._schedule_item_delete(item)
+        if found is None:
+            logger.warning(
+                "remote delete skipped; item without id was never confirmed",
+                extra={"fileName": entry.item.name},
+            )
+            return
+        await self._delete_remote(entry.metadata.path, found)
 
-    def _track_background_task(self, task: asyncio.Task) -> None:
+    def _schedule(self, coroutine: Coroutine, name: str) -> None:
+        task = asyncio.create_task(coroutine, name=name)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         task.add_done_callback(self._log_background_task)
@@ -433,64 +512,7 @@ class O2CloudFileStore:
             return
         error = task.exception()
         if error is not None:
-            logger.warning("recent upload background task failed", exc_info=(type(error), error, error.__traceback__))
-
-    async def _delete_recent_remote(self, recent: RecentUpload) -> None:
-        expected_id = None if recent.item.id.startswith("pending:") else recent.item.id
-        found = await self.api.find_child_with_retries(
-            recent.remote_parent_folder_id,
-            recent.remote_name,
-            False,
-            expected_size=recent.expected_size,
-            expected_id=expected_id,
-        )
-        if found is None:
-            logger.warning("recent upload remote delete skipped; item was not confirmed", extra={"fileName": recent.remote_name, "remoteId": recent.item.id})
-            return
-        deleted = await self._delete_item_with_retries(found)
-        if deleted:
-            logger.info("recent upload deleted remotely", extra={"fileName": recent.remote_name, "remoteId": found.id})
-
-    async def _delete_item_remote(self, item: O2Item) -> None:
-        deleted = await self._delete_item_with_retries(item)
-        if deleted:
-            logger.info("deferred remote delete completed", extra={"fileName": item.name, "remoteId": item.id})
-
-    async def _delete_item_with_retries(self, item: O2Item) -> bool:
-        deadline = time.time() + max(1, self.settings.delete_tombstone_ttl_seconds)
-        delay_seconds = 2.5
-        last_error: Optional[CloudError] = None
-        while True:
-            try:
-                await self.api.move_to_trash(item)
-                return True
-            except CloudError as ex:
-                if not _is_transient_delete_error(ex):
-                    raise
-                last_error = ex
-                if time.time() + delay_seconds > deadline:
-                    break
-                await asyncio.sleep(delay_seconds)
-        logger.warning(
-            "deferred remote delete expired",
-            extra={"fileName": item.name, "remoteId": item.id, "reason": str(last_error) if last_error else ""},
-        )
-        return False
-
-    async def _move_recent_remote(self, recent: RecentUpload, dst: str, parent_folder_id: str) -> None:
-        expected_id = None if recent.item.id.startswith("pending:") else recent.item.id
-        found = await self.api.find_child_with_retries(
-            recent.remote_parent_folder_id,
-            recent.remote_name,
-            False,
-            expected_size=recent.expected_size,
-            expected_id=expected_id,
-        )
-        if found is None:
-            logger.warning("recent upload remote move skipped; item was not confirmed", extra={"fileName": recent.remote_name, "remoteId": recent.item.id})
-            return
-        await self.api.rename_or_move(found, basename(dst), parent_folder_id)
-        logger.info("recent upload moved remotely", extra={"sourceName": recent.remote_name, "destinationPath": dst, "remoteId": found.id})
+            logger.warning("background task failed", exc_info=(type(error), error, error.__traceback__))
 
 
 def _join(parent: str, name: str) -> str:
@@ -516,8 +538,3 @@ async def _read_local_file(local_path: str, byte_range: ByteRange = None) -> Asy
                 break
             remaining -= len(chunk)
             yield chunk
-
-
-def _is_transient_delete_error(error: CloudError) -> bool:
-    text = str(error).lower()
-    return "med-1017" in text or "not yet validated" in text or "media not yet validated" in text

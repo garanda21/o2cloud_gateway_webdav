@@ -222,7 +222,8 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
                 "durationMs": round((time.perf_counter() - upload_started) * 1000, 2),
             },
         )
-        return Response(status_code=204 if existed else 201, headers={"ETag": item.etag or ""})
+        headers = {"ETag": item.etag} if item.etag else {}
+        return Response(status_code=204 if existed else 201, headers=headers)
     finally:
         try:
             os.unlink(tmp_path)

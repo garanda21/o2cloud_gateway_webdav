@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -14,9 +16,20 @@ import httpx
 
 from o2gateway.cloud.base import ByteRange, CloudItemMetadata, CloudQuota
 from o2gateway.o2.session import O2Cookie, O2Session, O2SessionStore
-from o2gateway.operations.errors import CloudError, CloudNotFound, CloudQuotaExceeded, CloudSessionExpired, CloudSessionMissing, CloudTimeout
+from o2gateway.operations.errors import (
+    CloudError,
+    CloudMediaNotValidated,
+    CloudNotFound,
+    CloudQuotaExceeded,
+    CloudRangeNotSatisfiable,
+    CloudSessionExpired,
+    CloudSessionMissing,
+    CloudTimeout,
+)
 from o2gateway.settings import Settings
 
+
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 200
 MEDIA_LIST_FIELDS = [
@@ -184,7 +197,24 @@ class O2CloudApiClient:
             raise last_error
         raise CloudError("O2 created folder but did not return an id")
 
-    async def upload_file(self, parent_folder_id: str, name: str, local_path: str) -> O2Item:
+    async def upload_file(
+        self,
+        parent_folder_id: str,
+        name: str,
+        local_path: str,
+        *,
+        media_id: Optional[str] = None,
+    ) -> O2Item:
+        """Sube un archivo. Con media_id, el proveedor reemplaza el contenido in-place
+        (mismo id); sin media_id y con un nombre ya existente, el proveedor crea un
+        duplicado "nombre (1).ext" — el llamante debe pasar media_id para sobrescribir.
+
+        La respuesta del upload incluye id/etag, por lo que no hace falta confirmar
+        contra el listado de carpeta (que puede tardar >60s en reflejar el archivo).
+        Lanza CloudMediaNotValidated si media_id apunta a un media aún en ventana de
+        validación (MED-1017, ~4-10s tras su subida).
+        """
+        started = time.perf_counter()
         size = Path(local_path).stat().st_size
         metadata: dict[str, Any] = {
             "name": name,
@@ -192,6 +222,8 @@ class O2CloudApiClient:
             "modificationdate": "",
             "folderid": _o2_id(parent_folder_id),
         }
+        if media_id is not None:
+            metadata["id"] = _o2_id(media_id)
         content_type = mimetypes.guess_type(name)[0]
         if content_type:
             metadata["contenttype"] = content_type
@@ -208,6 +240,18 @@ class O2CloudApiClient:
                 "file": (name, handle, content_type or "application/octet-stream"),
             }
             response = await self.client.post(url, headers=headers, files=files)
+        logger.info(
+            "o2 upload post completed",
+            extra={
+                "provider": self.settings.cloud_provider,
+                "folderId": parent_folder_id,
+                "fileName": name,
+                "bytesIn": size,
+                "mediaId": media_id,
+                "httpStatus": response.status_code,
+                "durationMs": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
         self._capture_cookies(response, session)
         if response.status_code in (401, 403):
             self._mark_session_expired()
@@ -218,13 +262,23 @@ class O2CloudApiClient:
                 return confirmed
         if response.status_code >= 400:
             raise CloudError("O2 upload failed HTTP %s: %s" % (response.status_code, response.text[:200]))
-        parsed = None
+        payload: Optional[dict[str, Any]] = None
         try:
-            parsed = _try_parse_item(response.json(), parent_folder_id, False, name)
+            payload = response.json()
         except Exception:
-            pass
-        confirmed = await self.find_child_with_retries(parent_folder_id, name, False, expected_size=size, expected_id=parsed.id if parsed else None)
-        return confirmed or parsed or O2Item("pending:upload:%s" % name, name, parent_folder_id, False, size=size)
+            payload = None
+        if isinstance(payload, dict):
+            # El proveedor puede responder HTTP 200 con un error en el cuerpo
+            # (p. ej. MED-1017 al sobrescribir por id en ventana de validación).
+            _throw_if_o2_error(payload)
+            parsed = _try_parse_item(payload, parent_folder_id, False, name)
+            if parsed is not None:
+                return replace(parsed, size=size, modified_at=parsed.modified_at or datetime.now(timezone.utc))
+        # Proveedores/formas de respuesta sin id: un único barrido del listado.
+        found = await self.find_child(parent_folder_id, name, False)
+        if found is not None:
+            return found
+        return O2Item("pending:upload:%s" % name, name, parent_folder_id, False, size=size)
 
     async def rename_or_move(self, item: O2Item, new_name: str, parent_folder_id: str) -> None:
         if item.is_folder:
@@ -313,12 +367,23 @@ class O2CloudApiClient:
                 return item
         return None
 
-    async def find_child_with_retries(self, parent_folder_id: str, name: str, is_folder: bool, expected_size: Optional[int] = None, expected_id: Optional[str] = None) -> Optional[O2Item]:
-        for _ in range(48):
+    async def find_child_with_retries(
+        self,
+        parent_folder_id: str,
+        name: str,
+        is_folder: bool,
+        expected_size: Optional[int] = None,
+        expected_id: Optional[str] = None,
+        *,
+        attempts: int = 48,
+        delay_seconds: float = 1.25,
+    ) -> Optional[O2Item]:
+        for attempt in range(max(0, attempts)):
             found = await self.find_child(parent_folder_id, name, is_folder)
             if found and (expected_size is None or found.size == expected_size) and (expected_id is None or found.id == expected_id):
                 return found
-            await asyncio.sleep(1.25)
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay_seconds)
         return None
 
     async def _load_folder(self, folder_id: str) -> list[O2Item]:
@@ -411,10 +476,11 @@ class O2CloudApiClient:
             headers["Range"] = "bytes=%s-%s" % (start, "" if end is None else end)
         async with self.client.stream("GET", _normalize_download_url(raw_url, file_name), headers=headers) as response:
             if response.status_code == 416:
-                return
+                # Antes se devolvía un stream vacío en silencio, lo que acababa en
+                # respuestas 200 con 0 bytes cuando los metadatos anunciaban tamaño >0.
+                raise CloudRangeNotSatisfiable("range %s rejected for %s" % (headers.get("Range"), file_name))
             if response.status_code in (401, 403):
-                self._mark_session_expired()
-                raise CloudSessionExpired("download session expired")
+                raise CloudError("download URL rejected HTTP %s" % response.status_code)
             response.raise_for_status()
             async for chunk in response.aiter_bytes(1024 * 1024):
                 yield chunk
@@ -757,6 +823,8 @@ def _throw_if_o2_error(payload: dict[str, Any]) -> None:
         if isinstance(error, dict):
             code = str(error.get("code") or "")
             message = str(error.get("message") or "")
+            if code == "MED-1017":
+                raise CloudMediaNotValidated(message or code)
             if code == "FOL-1035" or "maximum folder count" in message.lower():
                 raise CloudQuotaExceeded(message or code)
         raise CloudError("O2 returned error: %s" % str(error)[:240])

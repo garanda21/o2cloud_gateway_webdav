@@ -1,20 +1,21 @@
-# O2Cloud WebDAV Gateway
+# O2/Movistar Cloud WebDAV Gateway
 
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-garanda21%2Fo2cloud__gateway__webdav-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/garanda21/o2cloud_gateway_webdav)
 
-A Docker-first, Linux-native gateway that exposes **O2 Cloud** (the O2 / Telefónica
-personal cloud storage service, `cloud.o2online.es`) as a standard **WebDAV** share,
-plus a small web **admin panel** for authentication and status.
+A Docker-first, Linux-native gateway that exposes **O2 Cloud** and **Movistar Cloud**
+(Telefónica personal cloud storage services) as a standard **WebDAV** share, plus a
+small web **admin panel** for authentication and status.
 
 Point any WebDAV client — Finder, Windows Explorer, `rclone`, Nautilus, mobile
 apps — at the gateway and browse, upload, download, move, delete and lock your
-O2 Cloud files as if they were a normal network drive. The gateway handles O2's
-session cookies, validation keys, upload/download quirks and metadata caching
-behind the scenes.
+O2/Movistar Cloud files as if they were a normal network drive. The gateway handles
+each provider's session cookies, validation keys, upload/download quirks and metadata
+caching behind the scenes.
 
 - **WebDAV endpoint:** `/dav`
 - **Admin panel:** `/admin`
-- **Interactive O2 login:** a real Chromium session running inside the container,
+- **Interactive O2/Movistar login:** a real Chromium session running inside the
+  container,
   streamed to your browser over **noVNC** (default port `6080`).
 
 ---
@@ -24,10 +25,10 @@ behind the scenes.
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Quick start (Docker)](#quick-start-docker)
-- [Logging in to O2 (interactive VNC login)](#logging-in-to-o2-interactive-vnc-login)
+- [Logging in to O2/Movistar (interactive VNC login)](#logging-in-to-o2movistar-interactive-vnc-login)
 - [Manual session import](#manual-session-import)
 - [Using the WebDAV share](#using-the-webdav-share)
-- [Simulated mode (no real O2 account)](#simulated-mode-no-real-o2-account)
+- [Simulated mode (no real cloud account)](#simulated-mode-no-real-cloud-account)
 - [Secrets](#secrets)
 - [Environment variables](#environment-variables)
 - [Ports](#ports)
@@ -40,7 +41,7 @@ behind the scenes.
 
 ```
 WebDAV client ──HTTP──> :8088 /dav ─┐
-                                    ├─> o2gateway (FastAPI / ASGI) ─> O2 Cloud API
+                                    ├─> o2gateway (FastAPI / ASGI) ─> O2/Movistar Cloud API
 Browser ──────HTTP──> :8088 /admin ─┘         │
 Browser ──────HTTP──> :6080 noVNC ────────────┘ (interactive login only)
 ```
@@ -49,10 +50,10 @@ The gateway is a single FastAPI/ASGI application (served by Uvicorn) that:
 
 1. Serves a **WebDAV router** at `/dav` (PROPFIND, GET, PUT, DELETE, MKCOL, MOVE,
    COPY, LOCK/UNLOCK) backed by a pluggable cloud provider.
-2. Serves an **admin panel** at `/admin` for O2 login, session status and logout.
-3. Translates WebDAV operations into O2 Cloud API calls, caching metadata in a
+2. Serves an **admin panel** at `/admin` for O2/Movistar login, session status and logout.
+3. Translates WebDAV operations into O2/Movistar Cloud API calls, caching metadata in a
    local SQLite database to keep listings fast.
-4. Stores the O2 session (cookies + validation key) encrypted on disk.
+4. Stores the selected provider's session (cookies + validation key) encrypted on disk.
 
 The container also runs a headless X server (`Xvfb`) + `fluxbox` + `x11vnc` +
 `websockify`/`noVNC` so the interactive Chromium login can be driven from your
@@ -63,7 +64,7 @@ own browser — see below.
 - **Docker** and **Docker Compose** (the supported path — bundles Chromium,
   Playwright and the VNC stack).
 - A modern browser to reach `/admin` and the noVNC login screen.
-- An O2 Cloud account (unless you only run the `simulated` provider).
+- An O2 Cloud or Movistar Cloud account (unless you only run the `simulated` provider).
 
 For local (non-Docker) development you need Python **3.12+**.
 
@@ -95,19 +96,19 @@ Then open:
 - Admin panel: <http://localhost:8088/admin>
 - WebDAV root: <http://localhost:8088/dav>
 
-The shipped `docker-compose.yml` sets `CLOUD_PROVIDER=o2` (real O2 Cloud). To try
-it without an account first, set `CLOUD_PROVIDER=simulated` (see
-[Simulated mode](#simulated-mode-no-real-o2-account)).
+The shipped `docker-compose.yml` sets `CLOUD_PROVIDER=o2`. Set
+`CLOUD_PROVIDER=movistar` to use Movistar Cloud, or `CLOUD_PROVIDER=simulated` to
+try the gateway without an account (see [Simulated mode](#simulated-mode-no-real-cloud-account)).
 
 Log in to the admin panel with `ADMIN_USERNAME` / the admin password, then
-authenticate to O2.
+authenticate to the selected cloud provider.
 
-## Logging in to O2 (interactive VNC login)
+## Logging in to O2/Movistar (interactive VNC login)
 
-O2 Cloud has no public API token flow, so the gateway logs in the same way a
-human does: it drives a **real Chromium browser inside the container** using
-Playwright, and lets you complete the login form (including any 2FA / captcha /
-consent screens) with your own eyes and hands.
+O2 Cloud and Movistar Cloud have no public API token flow, so the gateway logs in
+the same way a human does: it drives a **real Chromium browser inside the container**
+using Playwright, and lets you complete the selected provider's login form (including
+any 2FA / captcha / consent screens) with your own eyes and hands.
 
 Because the container has no physical display, that Chromium instance runs on a
 virtual X server (`Xvfb` on `DISPLAY=:99`) and is exposed to you as a **web-based
@@ -119,17 +120,17 @@ Xvfb (:99)  ──>  Chromium (Playwright)  ──>  x11vnc  ──>  websockify
 
 Flow:
 
-1. Open the admin panel at `/admin` and start **Assisted O2 login**. This calls
+1. Open the admin panel at `/admin` and start **Assisted O2/Movistar login**. This calls
    `POST /api/admin/o2/login`, which launches Chromium on the virtual display and
    navigates to `O2_LOGIN_URL`.
 2. The panel shows (or links to) the **noVNC** screen. By default that is
    `http://localhost:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true`
    (host/port derived from `APP_BASE_URL` + `NOVNC_PORT`, or overridden with
    `O2_LOGIN_NOVNC_URL`).
-3. Complete the O2 login **in the VNC window** — type your credentials, pass any
+3. Complete the provider login **in the VNC window** — type your credentials, pass any
    2FA/captcha, accept consent dialogs.
 4. Once you land on the logged-in cloud page, the gateway captures the session
-   cookies and the O2 `validationKey`, encrypts them and stores them at
+   cookies and the provider `validationKey`, encrypts them and stores them at
    `O2_SESSION_FILE`. Chromium is then closed.
 5. Use **Session status / test / logout** in the admin panel to verify or clear
    the session.
@@ -146,13 +147,14 @@ Notes:
 ## Manual session import
 
 If you cannot use the VNC flow (headless host, restricted network), you can import
-a session captured elsewhere. Provide the same JSON shape the gateway stores:
+a session captured elsewhere. Provide the same JSON shape the gateway stores for the
+selected provider:
 
 ```json
 {
   "validationKey": "...",
   "cookies": [
-    {"name": "...", "value": "...", "domain": "cloud.o2online.es", "path": "/"}
+    {"name": "...", "value": "...", "domain": "<provider-host>", "path": "/"}
   ],
   "userAgent": "Mozilla/5.0 ...",
   "createdAt": "2026-07-04T12:00:00Z"
@@ -171,20 +173,20 @@ Authenticate with `WEBDAV_USERNAME` and the WebDAV password.
 - **Windows:** Map network drive → `http://localhost:8088/dav`
 - **rclone:**
   ```bash
-  rclone config create o2 webdav \
+  rclone config create cloud webdav \
     url=http://localhost:8088/dav vendor=other \
-    user=o2dav pass="$(rclone obscure change-me-webdav)"
-  rclone ls o2:
+    user=webdav-user pass="$(rclone obscure change-me-webdav)"
+  rclone ls cloud:
   ```
 
 Set `WEBDAV_READ_ONLY=true` to block all writes (PUT/DELETE/MOVE/MKCOL). LOCK
 support is implemented for clients that require it (macOS Finder, Office).
 
-## Simulated mode (no real O2 account)
+## Simulated mode (no real cloud account)
 
 Set `CLOUD_PROVIDER=simulated` to run the whole WebDAV/admin stack against a fake
 in-container filesystem rooted at `SIMULATED_ROOT` (default `/data/simulated`).
-No O2 login is needed. Useful for testing WebDAV clients and the gateway itself.
+No O2/Movistar login is needed. Useful for testing WebDAV clients and the gateway itself.
 
 ## Secrets
 
@@ -196,7 +198,7 @@ the corresponding non-file variable (if set) takes precedence.
 |-----------------------------------|-----------------------------------|----------------------------------------------------------------|
 | `secrets/webdav_password.txt`     | `/run/secrets/webdav_password`    | WebDAV client password (`WEBDAV_PASSWORD_FILE`)                |
 | `secrets/admin_password.txt`      | `/run/secrets/admin_password`     | Admin panel password (`ADMIN_PASSWORD_FILE`)                   |
-| `secrets/app_encryption_key.txt`  | `/run/secrets/app_encryption_key` | Encrypts the stored O2 session and signs admin sessions (`APP_ENCRYPTION_KEY_FILE`, `ADMIN_SESSION_SECRET_FILE`) |
+| `secrets/app_encryption_key.txt`  | `/run/secrets/app_encryption_key` | Encrypts the stored provider session and signs admin sessions (`APP_ENCRYPTION_KEY_FILE`, `ADMIN_SESSION_SECRET_FILE`) |
 
 Generate the encryption key with `openssl rand -base64 32`. Keep these files out
 of version control (`secrets/` should be git-ignored).
@@ -213,7 +215,7 @@ in-code defaults; `docker-compose.yml` overrides several of them.
 | `APP_HOST` | `0.0.0.0` | Interface the ASGI server binds to inside the container. |
 | `APP_PORT` | `8080` | Port the app listens on inside the container (mapped to `8088` on the host by compose). |
 | `APP_BASE_URL` | `http://localhost:8080` | Public base URL of the gateway. Used to build absolute links, including the default noVNC URL. |
-| `APP_ENCRYPTION_KEY_FILE` | _(unset)_ | File containing the encryption key used to encrypt the stored O2 session. |
+| `APP_ENCRYPTION_KEY_FILE` | _(unset)_ | File containing the encryption key used to encrypt the stored O2/Movistar session. |
 | `PUID` | `10001` | Host user id the container runs as. Set to the owner of the mounted volumes so the app can write `/config`, `/cache`, `/data`. |
 | `PGID` | `10001` | Host group id the container runs as (see `PUID`). |
 
@@ -225,25 +227,33 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLOUD_PROVIDER` | `simulated` | Backend to serve: `o2` (real O2 Cloud) or `simulated` (fake local filesystem). |
+| `CLOUD_PROVIDER` | `simulated` | Backend to serve: `o2` (O2 Cloud), `movistar` (Movistar Cloud), or `simulated` (fake local filesystem). |
 | `SIMULATED_ROOT` | `/data/simulated` | Root directory for the simulated provider's fake files. |
 
-### O2 Cloud
+### O2/Movistar Cloud
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `O2_API_BASE_URL` | `https://cloud.o2online.es/sapi/` | Base URL for O2 Cloud metadata/API calls. |
-| `O2_UPLOAD_BASE_URL` | `https://upload.cloud.o2online.es/sapi/` | Base URL for O2 Cloud uploads (separate host). |
-| `O2_LOGIN_URL` | `https://cloud.o2online.es/` | Page Chromium opens for the interactive login. |
-| `O2_SESSION_FILE` | `/config/secrets/o2-session.json` | Where the encrypted O2 session (cookies + validation key) is stored. |
+| `O2_API_BASE_URL` | `o2`: `https://cloud.o2online.es/sapi/`<br>`movistar`: `https://micloud.movistar.es/sapi/` | Base URL for metadata/API calls. The `O2_*` variable names are shared internal names: the default is selected from `CLOUD_PROVIDER`, unless you set an explicit custom URL. |
+| `O2_UPLOAD_BASE_URL` | `o2`: `https://upload.cloud.o2online.es/sapi/`<br>`movistar`: `https://upload.micloud.movistar.es/sapi/` | Base URL for uploads (separate host), selected from `CLOUD_PROVIDER` unless overridden. |
+| `O2_LOGIN_URL` | `o2`: `https://cloud.o2online.es/`<br>`movistar`: `https://micloud.movistar.es/` | Page Chromium opens for the interactive login, selected from `CLOUD_PROVIDER` unless overridden. |
+| `O2_SESSION_FILE` | `/config/secrets/o2-session.json` | Where the encrypted O2/Movistar session (cookies + validation key) is stored. |
 | `O2_PLAYWRIGHT_HEADLESS` | `false` | Run the login Chromium headless. Must be `false` for the interactive VNC login to be visible. |
-| `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2 API HTTP requests. |
+| `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2/Movistar API HTTP requests. |
+
+For Movistar Cloud, setting the provider is enough. The gateway automatically
+uses the Movistar API, upload, and login URLs unless you explicitly set custom
+URL values:
+
+```env
+CLOUD_PROVIDER=movistar
+```
 
 ### Interactive login / VNC
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `O2_LOGIN_NOVNC_URL` | _(unset)_ | Explicit URL to the noVNC login screen. If unset, it is derived from `APP_BASE_URL`, `NOVNC_PORT` and `NOVNC_PATH`. **Set this whenever the published host port differs from the internal `6080`** (e.g. you remapped it because `6080` was taken), or the gateway is reached by IP/hostname — otherwise the login link points at the wrong port. |
+| `O2_LOGIN_NOVNC_URL` | _(unset)_ | Explicit URL to the noVNC login screen. Despite its internal name, it applies to O2 and Movistar. If unset, it is derived from `APP_BASE_URL`, `NOVNC_PORT` and `NOVNC_PATH`. **Set this whenever the published host port differs from the internal `6080`** (e.g. you remapped it because `6080` was taken), or the gateway is reached by IP/hostname — otherwise the login link points at the wrong port. |
 | `NOVNC_PORT` | `6080` | Host/container port serving the noVNC web client. |
 | `NOVNC_PATH` | `/vnc.html?autoconnect=true&resize=scale&reconnect=true` | Path + query appended when building the noVNC URL. |
 | `DISPLAY` | `:99` | Virtual X display Chromium and VNC use (set in Dockerfile/compose). |
@@ -263,6 +273,7 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | `WEBDAV_READ_ONLY` | `false` | When `true`, reject all write methods (PUT/DELETE/MOVE/MKCOL/COPY). |
 | `WEBDAV_ALLOW_DOTFILES` | `true` | Allow listing/serving dotfiles (names starting with `.`). |
 | `WEBDAV_DEPTH_INFINITY` | `false` | Allow `Depth: infinity` PROPFIND requests (can be expensive). |
+| `WEBDAV_IGNORE_APPLEDOUBLE` | `true` | Ignore macOS AppleDouble sidecar files (`._*`) instead of uploading them to the cloud. |
 
 ### Admin panel
 
@@ -289,11 +300,11 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CACHE_METADATA_TTL_SECONDS` | `20` | How long directory/file metadata is cached before refetching from O2. |
+| `CACHE_METADATA_TTL_SECONDS` | `20` | How long directory/file metadata is cached before refetching from O2/Movistar. |
 | `CACHE_NEGATIVE_TTL_SECONDS` | `5` | How long "not found" results are cached. |
 | `CACHE_MAX_SIZE_MB` | `4096` | Max on-disk cache size in MB. |
 | `UPLOAD_MAX_FILE_MB` | `10240` | Max single-file upload size in MB. |
-| `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | Timeout for a single file download from O2. |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | Timeout for a single file download from O2/Movistar. |
 
 ### Logging
 
@@ -307,7 +318,7 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | Container | Host (compose) | Purpose |
 |-----------|----------------|---------|
 | `8080` | `8088` | HTTP: WebDAV (`/dav`), admin (`/admin`), health (`/health`). |
-| `6080` | `6080` | noVNC web client for the interactive O2 login. |
+| `6080` | `6080` | noVNC web client for the interactive O2/Movistar login. |
 
 `GET /health` returns the app health status and backs the Docker `HEALTHCHECK`.
 
@@ -340,7 +351,7 @@ src/o2gateway/
   settings.py           # All environment-driven settings
   webdav/               # WebDAV router, XML, PROPFIND parsing, locks
   admin/                # Admin panel router + templates
-  o2/                   # O2 Cloud API client, session store, Playwright login
+  o2/                   # O2/Movistar API clients, session store, Playwright login
   cloud/                # Provider interface + simulated provider
   persistence/          # SQLite DB, metadata cache
   security/             # Auth, session encryption

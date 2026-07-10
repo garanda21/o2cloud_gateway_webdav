@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -53,6 +54,7 @@ def create_webdav_router(
         store = store_factory()
         method = request.method.upper()
         cloud_path = cloud_path_from_request(path_base, request.url.path)
+        started = time.perf_counter()
         try:
             if method == "OPTIONS":
                 return _options()
@@ -61,17 +63,19 @@ def create_webdav_router(
             if method == "HEAD":
                 return await _head(store, cloud_path)
             if method == "GET":
-                return await _get(store, cloud_path, request)
+                return await _get(settings, store, cloud_path, request)
             if method == "PUT":
                 _assert_writable(settings)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
-                return await _put(settings, store, cloud_path, request)
+                return await _put(settings, store, cloud_path, request, operation_id)
             if method == "MKCOL":
                 _assert_writable(settings)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
                 return await _mkcol(store, cloud_path)
             if method == "DELETE":
                 _assert_writable(settings)
+                if _is_ignored_appledouble(settings, cloud_path):
+                    return Response(status_code=204)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
                 return await _delete(store, cloud_path)
             if method == "MOVE":
@@ -82,6 +86,8 @@ def create_webdav_router(
             if method == "COPY":
                 raise CloudUnsupported("COPY is not implemented in V1")
             if method == "LOCK":
+                if _is_ignored_appledouble(settings, cloud_path):
+                    return Response(status_code=204)
                 return await _lock(locks, cloud_path, request)
             if method == "UNLOCK":
                 return await _unlock(locks, request)
@@ -99,6 +105,16 @@ def create_webdav_router(
         except Exception as ex:
             logger.exception("webdav unhandled error", extra={"operation_id": operation_id})
             return Response(xml.error_response("gateway error"), status_code=502, media_type="application/xml")
+        finally:
+            logger.info(
+                "webdav request completed",
+                extra={
+                    "operation_id": operation_id,
+                    "method": method,
+                    "path": cloud_path,
+                    "durationMs": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
 
     route_path = path_base
     router.add_api_route(route_path, handler, methods=["OPTIONS", "PROPFIND", "HEAD", "GET", "PUT", "DELETE", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK", "PROPPATCH"])
@@ -118,6 +134,8 @@ def _options() -> Response:
 
 
 async def _propfind(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+    if _is_ignored_appledouble(settings, cloud_path):
+        raise CloudNotFound(cloud_path)
     depth = parse_depth(request.headers.get("depth"))
     if depth == "infinity" and not settings.webdav_depth_infinity:
         depth = "1"
@@ -126,7 +144,7 @@ async def _propfind(settings: Settings, store: CloudFileStore, cloud_path: str, 
         raise CloudNotFound(cloud_path)
     pairs = [(href_for_cloud_path(settings.normalized_webdav_base(), item.path, item.is_folder), item)]
     if item.is_folder and depth != "0":
-        children = await store.list(cloud_path)
+        children = _filter_ignored_appledouble(settings, await store.list(cloud_path))
         pairs.extend((href_for_cloud_path(settings.normalized_webdav_base(), child.path, child.is_folder), child) for child in children)
     return Response(xml.multistatus(pairs), status_code=207, media_type="application/xml")
 
@@ -139,41 +157,73 @@ async def _head(store: CloudFileStore, cloud_path: str) -> Response:
     return Response(status_code=200, headers=headers)
 
 
-async def _get(store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+async def _get(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+    if _is_ignored_appledouble(settings, cloud_path):
+        raise CloudNotFound(cloud_path)
     item = await store.get_metadata(cloud_path)
     if item is not None and item.is_folder:
         accept = request.headers.get("accept", "")
         if "text/html" in accept:
-            return await _browser_listing(store, cloud_path, request)
+            return await _browser_listing(settings, store, cloud_path, request)
     if item is None or item.is_folder:
         raise CloudNotFound(cloud_path)
     byte_range = parse_range(request.headers.get("range"))
     status = 206 if byte_range is not None else 200
-    headers = _metadata_headers(item)
+    headers = _metadata_headers(item, include_content_length=False)
     if byte_range is not None and item.size is not None:
         start, end = _range_bounds(byte_range, item.size)
         headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, item.size)
-        headers["Content-Length"] = str(max(0, end - start + 1))
-    return StreamingResponse(store.open_read(cloud_path, byte_range), status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
+    iterator = store.open_read(cloud_path, byte_range)
+    try:
+        first_chunk = await anext(iterator)
+    except StopAsyncIteration:
+        return Response(b"", status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
+    return StreamingResponse(_prepend_chunk(first_chunk, iterator), status_code=status, media_type=item.content_type or "application/octet-stream", headers=headers)
 
 
-async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request, operation_id: str) -> Response:
     if not settings.webdav_allow_dotfiles and Path(cloud_path).name.startswith("."):
         raise CloudForbidden("dotfiles are disabled")
+    if _is_ignored_appledouble(settings, cloud_path):
+        async for _ in request.stream():
+            pass
+        return Response(status_code=204)
     max_bytes = settings.upload_max_file_mb * 1024 * 1024
     Path(settings.upload_spool_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix="upload-", suffix=".tmp", dir=settings.upload_spool_dir)
     written = 0
     try:
+        read_started = time.perf_counter()
         with os.fdopen(fd, "wb") as handle:
             async for chunk in request.stream():
                 written += len(chunk)
                 if written > max_bytes:
                     raise CloudForbidden("upload exceeds configured limit")
                 handle.write(chunk)
+        logger.info(
+            "webdav upload body spooled",
+            extra={
+                "operation_id": operation_id,
+                "path": cloud_path,
+                "bytesIn": written,
+                "durationMs": round((time.perf_counter() - read_started) * 1000, 2),
+            },
+        )
         existed = await store.get_metadata(cloud_path)
+        upload_started = time.perf_counter()
         item = await store.upload(cloud_path, tmp_path, overwrite=True)
-        return Response(status_code=204 if existed else 201, headers={"ETag": item.etag or ""})
+        logger.info(
+            "webdav upload store completed",
+            extra={
+                "operation_id": operation_id,
+                "path": cloud_path,
+                "bytesIn": written,
+                "statusCode": 204 if existed else 201,
+                "durationMs": round((time.perf_counter() - upload_started) * 1000, 2),
+            },
+        )
+        headers = {"ETag": item.etag} if item.etag else {}
+        return Response(status_code=204 if existed else 201, headers=headers)
     finally:
         try:
             os.unlink(tmp_path)
@@ -220,12 +270,12 @@ async def _unlock(locks: WebDavLockService, request: Request) -> Response:
     return Response(status_code=204 if released else 409)
 
 
-def _metadata_headers(item: CloudItemMetadata) -> dict[str, str]:
+def _metadata_headers(item: CloudItemMetadata, *, include_content_length: bool = True) -> dict[str, str]:
     headers = {
         "Accept-Ranges": "bytes",
         "Last-Modified": xml.http_date(item.modified_at),
     }
-    if item.size is not None:
+    if include_content_length and item.size is not None:
         headers["Content-Length"] = str(item.size)
     if item.etag:
         headers["ETag"] = item.etag
@@ -248,10 +298,16 @@ def _assert_writable(settings: Settings) -> None:
         raise CloudForbidden("gateway is in read-only mode")
 
 
-async def _browser_listing(store: CloudFileStore, cloud_path: str, request: Request) -> Response:
+async def _prepend_chunk(first_chunk: bytes, iterator):
+    yield first_chunk
+    async for chunk in iterator:
+        yield chunk
+
+
+async def _browser_listing(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:
     from html import escape
 
-    children = await store.list(cloud_path)
+    children = _filter_ignored_appledouble(settings, await store.list(cloud_path))
     display_path = cloud_path if cloud_path else "/"
 
     # Build breadcrumbs
@@ -335,3 +391,14 @@ def _fmt_bytes(size: int) -> str:
         v /= 1024
     return f"{v:.2f} TB"
 
+
+def _is_ignored_appledouble(settings: Settings | None, cloud_path: str) -> bool:
+    if settings is None or not settings.webdav_ignore_appledouble:
+        return False
+    return Path(cloud_path).name.startswith("._")
+
+
+def _filter_ignored_appledouble(settings: Settings | None, items: list[CloudItemMetadata]) -> list[CloudItemMetadata]:
+    if settings is None or not settings.webdav_ignore_appledouble:
+        return items
+    return [item for item in items if not Path(item.path).name.startswith("._")]

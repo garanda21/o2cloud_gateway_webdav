@@ -40,8 +40,8 @@
         <h2>Estado</h2>
         <dl id="status">
           <dt>WebDAV URL</dt><dd>{{ webdav_url }}</dd>
-          <dt>Proveedor</dt><dd>{{ settings.cloud_provider }}</dd>
-          <dt>Sesión O2</dt><dd>{{ "configurada" if session and session.is_authenticated else "sin configurar" }}</dd>
+          <dt>Proveedor</dt><dd>{{ provider_label }}</dd>
+          <dt>Sesión {{ provider_label }}</dt><dd>{{ "configurada" if session and session.is_authenticated else "sin configurar" }}</dd>
           <dt>Login interactivo</dt><dd id="login-state">{{ login_status.state }}</dd>
         </dl>
         <p class="status-note">noVNC: <a class="inline-link" href="{{ novnc_url }}" target="_blank" rel="noopener noreferrer">{{ novnc_url }}</a></p>
@@ -51,11 +51,11 @@
         <div class="actions">
           <button class="primary" onclick="post('/api/admin/test')">Test conexión</button>
           <button onclick="post('/api/admin/cache/clear')">Limpiar caché</button>
-          <button onclick="post('/api/admin/o2/logout')">Eliminar sesión O2</button>
+          <button onclick="post('/api/admin/o2/logout')">Eliminar sesión {{ provider_label }}</button>
         </div>
       </section>
       <section>
-        <h2>Sesión O2</h2>
+        <h2>Sesión {{ provider_label }}</h2>
         <div class="actions" style="margin-bottom:14px;">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input type="radio" name="o2-login-mode" value="interactive" checked onchange="switchLoginMode(this.value)">
@@ -68,7 +68,7 @@
         </div>
         <div id="login-mode-interactive">
           <p class="muted">Abre una ventana de navegador controlada donde puedes completar el login con tu teléfono, contraseña y SMS.</p>
-          <button class="primary" onclick="startO2Login()">Iniciar login O2</button>
+          <button class="primary" onclick="startO2Login()">Iniciar login {{ provider_label }}</button>
         </div>
         <div id="login-mode-import" style="display:none;">
           <p class="muted">Pega JSON con validationKey, cookies y userAgent.</p>
@@ -89,6 +89,7 @@
     <script>
       const csrf = "{{ csrf }}";
       const novncUrl = "{{ novnc_url }}";
+      const providerLabel = "{{ provider_label }}";
       let loginPopup = null;
       let loginPollTimer = null;
 
@@ -132,9 +133,9 @@
         const loginState = document.getElementById('login-state')?.textContent || 'idle';
         const rows = [
           ['Servicio', data.service || 'unknown'],
-          ['Proveedor', data.cloudProvider || '-'],
+          ['Proveedor', data.cloudProviderLabel || data.cloudProvider || '-'],
           ['WebDAV URL', data.webdavUrl || '-'],
-          ['Sesión O2', data.o2Session || '-'],
+          [`Sesión ${providerLabel}`, data.o2Session || '-'],
           ['Login interactivo', loginState],
           ['Cuota', data.quota ? `${fmtBytes(data.quota.usedBytes)} / ${fmtBytes(data.quota.totalBytes)}` : '-'],
           ['Metadata cache', data.metadataCacheEntries ?? '-'],
@@ -192,7 +193,7 @@
           stopLoginPolling();
           if (data.state === 'succeeded') {
             closeLoginPopup();
-            document.getElementById('output').textContent = 'Login O2 completado. Estado actualizado.';
+            document.getElementById('output').textContent = `Login ${providerLabel} completado. Estado actualizado.`;
             await loadStatus();
             await loadLogs();
             return;
@@ -214,7 +215,7 @@
 
       async function startO2Login() {
         const out = document.getElementById('output');
-        out.textContent = 'Iniciando login O2...';
+        out.textContent = `Iniciando login ${providerLabel}...`;
         loginPopup = window.open(novncUrl, '_blank', 'noopener,noreferrer');
         if (!loginPopup) {
           out.textContent = `noVNC no se pudo abrir automáticamente. Ábrelo manualmente aquí: ${novncUrl}`;

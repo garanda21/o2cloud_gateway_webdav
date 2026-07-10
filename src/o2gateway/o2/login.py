@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from o2gateway.o2.api import O2CloudApiClient
 from o2gateway.o2.session import O2Cookie, O2Session, O2SessionStore
@@ -149,9 +150,12 @@ class O2PlaywrightLoginService:
         if not validation_key:
             return None
         cookies = []
-        for cookie in await context.cookies("https://cloud.o2online.es/"):
-            if "o2online.es" in (cookie.get("domain") or "") and cookie.get("name") and cookie.get("value"):
-                cookies.append(O2Cookie(cookie["name"], cookie["value"], cookie.get("domain") or "cloud.o2online.es", cookie.get("path") or "/"))
+        login_origin = _origin_for(self.settings.o2_login_url or self.settings.o2_api_base_url)
+        login_host = urlparse(login_origin).hostname or ""
+        for cookie in await context.cookies(login_origin):
+            domain = cookie.get("domain") or login_host
+            if _cookie_matches_host(domain, login_host) and cookie.get("name") and cookie.get("value"):
+                cookies.append(O2Cookie(cookie["name"], cookie["value"], domain, cookie.get("path") or "/"))
         return O2Session(
             validation_key=validation_key,
             cookies=cookies,
@@ -179,6 +183,19 @@ def _cleanup_login_profiles(profiles_dir: Path) -> None:
                 shutil.rmtree(child, ignore_errors=True)
         except OSError:
             continue
+
+
+def _origin_for(raw_url: str) -> str:
+    parsed = urlparse(raw_url)
+    scheme = parsed.scheme or "https"
+    host = parsed.hostname or raw_url.strip("/").split("/")[0]
+    return f"{scheme}://{host}/"
+
+
+def _cookie_matches_host(domain: str, host: str) -> bool:
+    clean = domain.lstrip(".").lower()
+    host = host.lower()
+    return bool(clean and host and (host == clean or host.endswith("." + clean)))
 
 
 @dataclass

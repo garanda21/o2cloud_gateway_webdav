@@ -33,6 +33,16 @@ class CloudRateLimited(CloudError):
     status_code = 429
 
 
+class CloudMediaNotValidated(CloudError):
+    """El proveedor rechaza operar sobre un media aún en ventana de validación (MED-1017)."""
+
+    status_code = 423
+
+
+class CloudRangeNotSatisfiable(CloudError):
+    status_code = 416
+
+
 class CloudTimeout(CloudError):
     status_code = 504
 

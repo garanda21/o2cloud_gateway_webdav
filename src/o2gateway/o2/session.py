@@ -23,6 +23,10 @@ class O2Session:
     validation_key: str = ""
     cookies: list[O2Cookie] = field(default_factory=list)
     user_agent: str = ""
+    oauth_bundle: str = ""
+    device_id: str = ""
+    device_name: str = ""
+    encryption_token: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     @property
@@ -32,6 +36,10 @@ class O2Session:
     @property
     def cookie_header(self) -> str:
         return "; ".join("%s=%s" % (cookie.name, cookie.value) for cookie in self.cookies if cookie.name and cookie.value)
+
+    @property
+    def can_refresh(self) -> bool:
+        return bool(self.oauth_bundle.strip())
 
 
 class O2SessionStore:
@@ -78,11 +86,25 @@ class O2SessionStore:
             return None
 
 
+def normalize_oauth_bundle(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    scheme, separator, credential = raw.partition(" ")
+    if separator and scheme.lower() == "oauth":
+        return credential.strip()
+    return raw if not separator else ""
+
+
 def serialize_session(session: O2Session) -> dict[str, Any]:
     return {
         "validationKey": session.validation_key,
         "cookies": [asdict(cookie) for cookie in session.cookies],
         "userAgent": session.user_agent,
+        "oauthBundle": session.oauth_bundle,
+        "deviceId": session.device_id,
+        "deviceName": session.device_name,
+        "encryptionToken": session.encryption_token,
         "createdAt": session.created_at,
     }
 
@@ -107,5 +129,9 @@ def deserialize_session(payload: dict[str, Any]) -> O2Session:
         validation_key=str(payload.get("validationKey") or payload.get("validation_key") or ""),
         cookies=cookies,
         user_agent=str(payload.get("userAgent") or payload.get("user_agent") or ""),
+        oauth_bundle=str(payload.get("oauthBundle") or payload.get("oauth_bundle") or ""),
+        device_id=str(payload.get("deviceId") or payload.get("device_id") or ""),
+        device_name=str(payload.get("deviceName") or payload.get("device_name") or ""),
+        encryption_token=str(payload.get("encryptionToken") or payload.get("encryption_token") or payload.get("encryption-token") or ""),
         created_at=str(payload.get("createdAt") or payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
     )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -41,9 +43,16 @@ def _fernet_from_raw(raw: str) -> Fernet:
 def write_private(path: str, data: bytes) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    fd, temporary = tempfile.mkstemp(prefix=target.name + ".", dir=str(target.parent))
     try:
-        target.chmod(0o600)
-    except OSError:
-        pass
-
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        Path(temporary).chmod(0o600)
+        os.replace(temporary, target)
+    finally:
+        try:
+            Path(temporary).unlink()
+        except FileNotFoundError:
+            pass

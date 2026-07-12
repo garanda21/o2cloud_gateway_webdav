@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from o2gateway.o2.api import (
@@ -19,6 +19,7 @@ from o2gateway.o2.api import (
     _object,
     _o2_id,
 )
+from o2gateway.o2.session import O2Session
 
 
 class MovistarCloudApiClient(O2CloudApiClient):
@@ -99,8 +100,8 @@ class MovistarCloudApiClient(O2CloudApiClient):
             )
         return output
 
-    def _upload_url(self, query: dict[str, str]) -> str:
-        session = self._require_session()
+    def _upload_url(self, query: dict[str, str], session: Optional[O2Session] = None) -> str:
+        session = session or self._require_session()
         params = {key: value for key, value in query.items() if value is not None}
         if session.validation_key:
             params["validationkey"] = session.validation_key

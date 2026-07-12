@@ -52,13 +52,17 @@ def create_admin_router(
     async def dashboard(request: Request):
         if not is_admin(request):
             return RedirectResponse(base + "/login", status_code=303)
+        session = session_store.read()
         return templates.TemplateResponse(
             request,
             "dashboard.html",
             {
                 "settings": settings,
                 "csrf": csrf(request),
-                "session": session_store.read(),
+                "session": session,
+                "renewal_available": bool(
+                    session and (session.can_refresh or (login_service is not None and login_service.has_persistent_profile()))
+                ),
                 "webdav_url": settings.app_base_url.rstrip("/") + settings.normalized_webdav_base(),
                 "novnc_url": settings.novnc_url(),
                 "login_status": login_coordinator.status(),
@@ -116,6 +120,9 @@ def create_admin_router(
             "cloudProviderLabel": settings.provider_label(),
             "webdavUrl": settings.app_base_url.rstrip("/") + settings.normalized_webdav_base(),
             "o2Session": o2_session,
+            "renewalAvailable": bool(
+                session and (session.can_refresh or (login_service is not None and login_service.has_persistent_profile()))
+            ),
             "quota": quota,
             "metadataCacheEntries": await metadata_cache.count(),
             "activeLocks": len(await locks.list_active()),
@@ -133,6 +140,7 @@ def create_admin_router(
             "createdAt": session.created_at if session else None,
             "cookieCount": len(session.cookies) if session else 0,
             "userAgent": session.user_agent if session else None,
+            "renewable": bool(session and (session.can_refresh or (login_service is not None and login_service.has_persistent_profile()))),
             "encrypted": session_store.box.enabled,
         }
 
@@ -151,6 +159,8 @@ def create_admin_router(
         if not auth.validate_csrf(request):
             return JSONResponse({"error": "invalid csrf"}, status_code=403)
         session_store.delete()
+        if login_service is not None:
+            login_service.clear_session_cache()
         login_coordinator.reset()
         return {"ok": True}
 

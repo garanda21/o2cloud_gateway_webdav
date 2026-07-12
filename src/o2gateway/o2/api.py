@@ -9,13 +9,13 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
 from o2gateway.cloud.base import ByteRange, CloudItemMetadata, CloudQuota
-from o2gateway.o2.session import O2Cookie, O2Session, O2SessionStore
+from o2gateway.o2.session import O2Cookie, O2Session, O2SessionStore, normalize_oauth_bundle
 from o2gateway.operations.errors import (
     CloudError,
     CloudMediaNotValidated,
@@ -32,6 +32,7 @@ from o2gateway.settings import Settings
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 200
+AUTH_REJECTION_STATUSES = (401, 403)
 MEDIA_LIST_FIELDS = [
     "name",
     "modificationdate",
@@ -74,6 +75,8 @@ class O2CloudApiClient:
         self.client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
         self._folder_candidates: dict[str, list[str]] = {}
         self._download_urls: dict[str, str] = {}
+        self._refresh_lock = asyncio.Lock()
+        self._silent_reauthenticator: Optional[Callable[[], Awaitable[bool]]] = None
         # Once O2 rejects the session with 401/403 we record the validationKey
         # that failed. While that same key is active we short-circuit every
         # request instead of hammering O2 with calls that can only fail again.
@@ -82,6 +85,9 @@ class O2CloudApiClient:
 
     async def close(self) -> None:
         await self.client.aclose()
+
+    def set_silent_reauthenticator(self, callback: Callable[[], Awaitable[bool]]) -> None:
+        self._silent_reauthenticator = callback
 
     def _mark_session_expired(self) -> None:
         session = self.session_store.read()
@@ -105,6 +111,7 @@ class O2CloudApiClient:
         return self._expired_at
 
     async def validate_session(self, session: Optional[O2Session] = None) -> bool:
+        supplied_session = session is not None
         if session is None:
             # Read directly (not via _require_session) so an expired-flag does not
             # short-circuit an explicit re-check; this probe can clear the flag.
@@ -129,7 +136,9 @@ class O2CloudApiClient:
                     return True
             except Exception:
                 continue
-        self._mark_session_expired()
+        current = self.session_store.read()
+        if not supplied_session or (current is not None and current.validation_key == session.validation_key):
+            self._mark_session_expired()
         return False
 
     async def root_folder(self) -> O2Item:
@@ -160,6 +169,20 @@ class O2CloudApiClient:
         total = total or 10 * 1024 * 1024 * 1024 * 1024
         free = free if free is not None else max(0, total - used)
         return CloudQuota(used_bytes=max(0, used), total_bytes=max(0, total), free_bytes=max(0, min(free, total)))
+
+    async def keepalive(self) -> None:
+        session = self._require_session()
+        response = await self._request(
+            "GET",
+            "media",
+            {"action": "get-storage-space", "softdeleted": "true"},
+            parse_json=False,
+            allow_refresh=session.can_refresh,
+        )
+        if response.status_code in AUTH_REJECTION_STATUSES:
+            self._mark_session_expired()
+            raise CloudSessionExpired("%s session expired" % self.settings.provider_label())
+        response.raise_for_status()
 
     async def list_folder(self, folder_id: str) -> list[O2Item]:
         last_error: Optional[Exception] = None
@@ -230,16 +253,26 @@ class O2CloudApiClient:
         query = {"action": "save"}
         if size > 200 * 1024 * 1024:
             query["acceptasynchronous"] = "true"
-        url = self._upload_url(query)
-        session = self._require_session()
-        headers = self._session_headers(session)
-        headers.update({"Accept": "*/*", "X-Requested-With": "XMLHttpRequest", "Connection": "keep-alive"})
-        with open(local_path, "rb") as handle:
-            files = {
-                "data": (None, json.dumps({"data": metadata}, separators=(",", ":")), "application/json"),
-                "file": (name, handle, content_type or "application/octet-stream"),
-            }
-            response = await self.client.post(url, headers=headers, files=files)
+        response: Optional[httpx.Response] = None
+        for attempt in range(2):
+            session = self._require_session()
+            url = self._upload_url(query, session)
+            headers = self._session_headers(session)
+            headers.update({"Accept": "*/*", "X-Requested-With": "XMLHttpRequest", "Connection": "keep-alive"})
+            with open(local_path, "rb") as handle:
+                files = {
+                    "data": (None, json.dumps({"data": metadata}, separators=(",", ":")), "application/json"),
+                    "file": (name, handle, content_type or "application/octet-stream"),
+                }
+                response = await self.client.post(url, headers=headers, files=files)
+            if response.status_code in AUTH_REJECTION_STATUSES:
+                if attempt == 0 and await self._recover_session(response, session):
+                    continue
+                self._mark_session_expired()
+                raise CloudSessionExpired("%s rejected upload session" % self.settings.provider_label())
+            self._capture_response_session(response, session)
+            break
+        assert response is not None
         logger.info(
             "o2 upload post completed",
             extra={
@@ -252,10 +285,6 @@ class O2CloudApiClient:
                 "durationMs": round((time.perf_counter() - started) * 1000, 2),
             },
         )
-        self._capture_cookies(response, session)
-        if response.status_code in (401, 403):
-            self._mark_session_expired()
-            raise CloudSessionExpired("O2 rejected upload session")
         if response.status_code >= 500 and size > 200 * 1024 * 1024:
             confirmed = await self.find_child_with_retries(parent_folder_id, name, False, expected_size=size)
             if confirmed:
@@ -468,28 +497,40 @@ class O2CloudApiClient:
             return await self._json("POST", "media", query)
 
     async def _download_url(self, raw_url: str, file_name: str, byte_range: ByteRange) -> AsyncIterator[bytes]:
-        session = self._require_session()
-        headers = self._session_headers(session)
-        headers["Accept"] = "*/*"
-        if byte_range is not None:
-            start, end = byte_range
-            headers["Range"] = "bytes=%s-%s" % (start, "" if end is None else end)
-        async with self.client.stream("GET", _normalize_download_url(raw_url, file_name), headers=headers) as response:
-            if response.status_code == 416:
-                # Antes se devolvía un stream vacío en silencio, lo que acababa en
-                # respuestas 200 con 0 bytes cuando los metadatos anunciaban tamaño >0.
-                raise CloudRangeNotSatisfiable("range %s rejected for %s" % (headers.get("Range"), file_name))
-            if response.status_code in (401, 403):
-                raise CloudError("download URL rejected HTTP %s" % response.status_code)
-            response.raise_for_status()
-            async for chunk in response.aiter_bytes(1024 * 1024):
-                yield chunk
+        for attempt in range(2):
+            session = self._require_session()
+            headers = self._session_headers(session)
+            headers["Accept"] = "*/*"
+            if byte_range is not None:
+                start, end = byte_range
+                headers["Range"] = "bytes=%s-%s" % (start, "" if end is None else end)
+            rejected: Optional[httpx.Response] = None
+            async with self.client.stream("GET", _normalize_download_url(raw_url, file_name), headers=headers) as response:
+                if response.status_code == 416:
+                    # Antes se devolvía un stream vacío en silencio, lo que acababa en
+                    # respuestas 200 con 0 bytes cuando los metadatos anunciaban tamaño >0.
+                    raise CloudRangeNotSatisfiable("range %s rejected for %s" % (headers.get("Range"), file_name))
+                if response.status_code in AUTH_REJECTION_STATUSES:
+                    rejected = response
+                else:
+                    self._capture_response_session(response, session)
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        yield chunk
+                    return
+            if rejected is not None and attempt == 0 and await self._recover_session(rejected, session):
+                continue
+            if rejected is not None:
+                if session.can_refresh and normalize_oauth_bundle(rejected.headers.get("authorization", "")):
+                    self._mark_session_expired()
+                    raise CloudSessionExpired("%s rejected download session" % self.settings.provider_label())
+                raise CloudError("download URL rejected HTTP %s" % rejected.status_code)
 
     async def _json(self, method: str, resource: str, query: dict[str, str], body: Any = None, form: bool = False) -> dict[str, Any]:
         response = await self._request(method, resource, query, body=body, form=form, parse_json=False)
-        if response.status_code in (401, 403):
+        if response.status_code in AUTH_REJECTION_STATUSES:
             self._mark_session_expired()
-            raise CloudSessionExpired("O2 session expired")
+            raise CloudSessionExpired("%s session expired" % self.settings.provider_label())
         response.raise_for_status()
         try:
             payload = response.json()
@@ -498,8 +539,39 @@ class O2CloudApiClient:
         _throw_if_o2_error(payload)
         return payload
 
-    async def _request(self, method: str, resource: str, query: dict[str, str], body: Any = None, form: bool = False, session: Optional[O2Session] = None, parse_json: bool = True) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        resource: str,
+        query: dict[str, str],
+        body: Any = None,
+        form: bool = False,
+        session: Optional[O2Session] = None,
+        parse_json: bool = True,
+        allow_refresh: bool = True,
+    ) -> httpx.Response:
+        supplied_session = session is not None
         session = session or self._require_session()
+        response = await self._send_api_request(method, resource, query, body, form, session)
+        if response.status_code in AUTH_REJECTION_STATUSES:
+            if allow_refresh and not supplied_session and await self._recover_session(response, session):
+                refreshed = self._require_session()
+                response = await self._send_api_request(method, resource, query, body, form, refreshed)
+                if response.status_code not in AUTH_REJECTION_STATUSES:
+                    self._capture_response_session(response, refreshed)
+            return response
+        self._capture_response_session(response, session)
+        return response
+
+    async def _send_api_request(
+        self,
+        method: str,
+        resource: str,
+        query: dict[str, str],
+        body: Any,
+        form: bool,
+        session: O2Session,
+    ) -> httpx.Response:
         url = self._api_url(resource, query, session)
         headers = self._session_headers(session)
         headers["Accept"] = "application/json"
@@ -509,7 +581,6 @@ class O2CloudApiClient:
             response = await self.client.request(method, url, headers=headers, data={"data": json.dumps(body, separators=(",", ":"))})
         else:
             response = await self.client.request(method, url, headers=headers, json=body)
-        self._capture_cookies(response, session)
         return response
 
     def _api_url(self, resource: str, query: dict[str, str], session: O2Session) -> str:
@@ -519,8 +590,8 @@ class O2CloudApiClient:
         base = self.settings.o2_api_base_url.rstrip("/") + "/"
         return urljoin(base, resource.lstrip("/")) + "?" + urlencode(params)
 
-    def _upload_url(self, query: dict[str, str]) -> str:
-        session = self._require_session()
+    def _upload_url(self, query: dict[str, str], session: Optional[O2Session] = None) -> str:
+        session = session or self._require_session()
         params = {key: value for key, value in query.items() if value is not None}
         if session.validation_key:
             params["validationkey"] = session.validation_key
@@ -532,19 +603,115 @@ class O2CloudApiClient:
             "Origin": self.settings.o2_api_base_url.split("/sapi")[0],
             "Referer": self.settings.o2_api_base_url.split("/sapi")[0] + "/",
             "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-            "X-deviceid": "O2CloudGateway",
+            "X-deviceid": session.device_id or "O2CloudGateway",
+            "X-devicename": session.device_name or "O2CloudGateway",
         }
+        if session.oauth_bundle:
+            headers["Authorization"] = "oauth " + session.oauth_bundle
         if session.cookie_header:
             headers["Cookie"] = session.cookie_header
         return headers
 
-    def _capture_cookies(self, response: httpx.Response, session: O2Session) -> None:
+    async def _recover_session(self, response: httpx.Response, failed_session: O2Session) -> bool:
+        rotated_bundle = normalize_oauth_bundle(response.headers.get("authorization", ""))
+        async with self._refresh_lock:
+            current = self.session_store.read()
+            if current is None or not current.is_authenticated:
+                return False
+            if current.validation_key != failed_session.validation_key or current.created_at != failed_session.created_at:
+                return True
+            if failed_session.can_refresh and rotated_bundle and current.oauth_bundle == failed_session.oauth_bundle:
+                current.oauth_bundle = rotated_bundle
+                self._merge_response_cookies(response, current)
+                self.session_store.save(current)
+            if current.oauth_bundle and rotated_bundle:
+                return await self._oauth_login(current)
+            if self._silent_reauthenticator is None:
+                return False
+            try:
+                recovered = await self._silent_reauthenticator()
+            except Exception:
+                logger.exception("silent browser session recovery failed", extra={"provider": self.settings.cloud_provider})
+                return False
+            if not recovered:
+                return False
+            refreshed = self.session_store.read()
+            return bool(refreshed and refreshed.is_authenticated)
+
+    async def _oauth_login(self, session: O2Session) -> bool:
+        query = {
+            "action": "login",
+            "responsetime": "true",
+        }
+        url = self._api_url("login/oauth", query, session)
+        headers = self._session_headers(session)
+        headers["Accept"] = "application/json"
+        response = await self.client.request("POST", url, headers=headers, content=b"")
+        if response.status_code >= 400:
+            logger.warning(
+                "cloud oauth session renewal failed",
+                extra={"provider": self.settings.cloud_provider, "httpStatus": response.status_code},
+            )
+            return False
+        self._merge_response_session(response, session)
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            return False
+        try:
+            _throw_if_o2_error(payload)
+        except Exception:
+            return False
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return False
+        validation_key = _first_string(data, "validationkey", "validationKey")
+        oauth_bundle = normalize_oauth_bundle(_first_string(data, "access_token", "accessToken") or "")
+        if validation_key:
+            session.validation_key = validation_key
+        if oauth_bundle:
+            session.oauth_bundle = oauth_bundle
+        session.encryption_token = _first_string(data, "encryption-token", "encryptionToken") or session.encryption_token
+        jsessionid = _first_string(data, "jsessionid", "JSESSIONID")
+        if jsessionid:
+            self._replace_cookie(session, O2Cookie("JSESSIONID", jsessionid, urlparse(self.settings.o2_api_base_url).hostname or "", "/"))
+        if not session.validation_key or not session.oauth_bundle:
+            return False
+        self.session_store.save(session)
+        self._clear_session_expiry()
+        logger.info("cloud oauth session renewed", extra={"provider": self.settings.cloud_provider})
+        return True
+
+    def _capture_response_session(self, response: httpx.Response, session: O2Session) -> None:
+        if self._merge_response_session(response, session):
+            self.session_store.save(session)
+
+    def _merge_response_session(self, response: httpx.Response, session: O2Session) -> bool:
+        changed = self._merge_response_cookies(response, session)
+        oauth_bundle = normalize_oauth_bundle(response.headers.get("authorization", ""))
+        if oauth_bundle and oauth_bundle != session.oauth_bundle:
+            session.oauth_bundle = oauth_bundle
+            changed = True
+        return changed
+
+    def _merge_response_cookies(self, response: httpx.Response, session: O2Session) -> bool:
+        changed = False
         existing = {cookie.name: cookie for cookie in session.cookies}
         for cookie in response.cookies.jar:
             if cookie.name and cookie.value:
-                existing[cookie.name] = O2Cookie(cookie.name, cookie.value, cookie.domain or "cloud.o2online.es", cookie.path or "/")
+                updated = O2Cookie(cookie.name, cookie.value, cookie.domain or urlparse(self.settings.o2_api_base_url).hostname or "", cookie.path or "/")
+                if existing.get(cookie.name) != updated:
+                    existing[cookie.name] = updated
+                    changed = True
+        if changed:
+            session.cookies = list(existing.values())
+        return changed
+
+    @staticmethod
+    def _replace_cookie(session: O2Session, updated: O2Cookie) -> None:
+        existing = {cookie.name: cookie for cookie in session.cookies}
+        existing[updated.name] = updated
         session.cookies = list(existing.values())
-        self.session_store.save(session)
 
     def _require_session(self) -> O2Session:
         session = self.session_store.read()

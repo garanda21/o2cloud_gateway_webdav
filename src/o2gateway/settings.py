@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     o2_login_url: str = O2_LOGIN_URL
     o2_session_file: str = "/config/secrets/o2-session.json"
     o2_playwright_headless: bool = False
+    o2_session_keepalive_seconds: int = 300
     o2_login_novnc_url: Optional[str] = None
     novnc_port: int = 6080
     novnc_path: str = "/vnc.html?autoconnect=true&resize=scale&reconnect=true"

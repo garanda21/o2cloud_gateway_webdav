@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Optional
 
 import uvicorn
@@ -39,6 +40,7 @@ class AppServices:
         self._simulated_store: Optional[SimulatedCloudFileStore] = None
         self._o2_store: Optional[O2CloudFileStore] = None
         self.o2_login = O2PlaywrightLoginService(settings, self.o2_session_store, self.o2_api)
+        self.o2_api.set_silent_reauthenticator(self.o2_login.silent_reauthenticate)
         self.o2_login_coordinator = O2LoginCoordinator(settings, self.o2_session_store, self.o2_login)
 
     def _build_cloud_api(self) -> O2CloudApiClient:
@@ -52,6 +54,14 @@ class AppServices:
 
     async def close(self) -> None:
         await self.o2_api.close()
+
+    async def keep_session_alive(self) -> None:
+        interval = self.settings.o2_session_keepalive_seconds
+        if interval <= 0 or self.settings.cloud_provider.lower() not in {"o2", "movistar"}:
+            return
+        while True:
+            await asyncio.sleep(max(60, interval))
+            await self.o2_login.keep_session_alive()
 
     def store(self) -> CloudFileStore:
         if self.settings.cloud_provider.lower() in {"o2", "movistar"}:
@@ -73,10 +83,14 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         await services.initialize()
         app.state.services = services
+        keepalive_task = asyncio.create_task(services.keep_session_alive())
         logger.info("o2cloud gateway started")
         try:
             yield
         finally:
+            keepalive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await keepalive_task
             await services.close()
 
     app = FastAPI(title="O2Cloud WebDAV Gateway", version="0.1.0", lifespan=lifespan)

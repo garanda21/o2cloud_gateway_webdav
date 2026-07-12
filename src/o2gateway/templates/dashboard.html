@@ -42,6 +42,7 @@
           <dt>WebDAV URL</dt><dd>{{ webdav_url }}</dd>
           <dt>Proveedor</dt><dd>{{ provider_label }}</dd>
           <dt>Sesión {{ provider_label }}</dt><dd>{{ "configurada" if session and session.is_authenticated else "sin configurar" }}</dd>
+          <dt>Renovación automática</dt><dd>{{ "disponible" if renewal_available else "no disponible" }}</dd>
           <dt>Login interactivo</dt><dd id="login-state">{{ login_status.state }}</dd>
         </dl>
         <p class="status-note">noVNC: <a class="inline-link" href="{{ novnc_url }}" target="_blank" rel="noopener noreferrer">{{ novnc_url }}</a></p>
@@ -71,7 +72,7 @@
           <button class="primary" onclick="startO2Login()">Iniciar login {{ provider_label }}</button>
         </div>
         <div id="login-mode-import" style="display:none;">
-          <p class="muted">Pega JSON con validationKey, cookies y userAgent.</p>
+          <p class="muted">Pega JSON con validationKey, cookies, userAgent y, si está disponible, oauthBundle.</p>
           <textarea id="session-json"></textarea>
           <p><button onclick="importSession()">Importar sesión</button></p>
         </div>
@@ -136,6 +137,7 @@
           ['Proveedor', data.cloudProviderLabel || data.cloudProvider || '-'],
           ['WebDAV URL', data.webdavUrl || '-'],
           [`Sesión ${providerLabel}`, data.o2Session || '-'],
+          ['Renovación automática', data.renewalAvailable ? 'disponible' : 'no disponible'],
           ['Login interactivo', loginState],
           ['Cuota', data.quota ? `${fmtBytes(data.quota.usedBytes)} / ${fmtBytes(data.quota.totalBytes)}` : '-'],
           ['Metadata cache', data.metadataCacheEntries ?? '-'],

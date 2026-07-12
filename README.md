@@ -130,10 +130,34 @@ Flow:
 3. Complete the provider login **in the VNC window** — type your credentials, pass any
    2FA/captcha, accept consent dialogs.
 4. Once you land on the logged-in cloud page, the gateway captures the session
-   cookies and the provider `validationKey`, encrypts them and stores them at
-   `O2_SESSION_FILE`. Chromium is then closed.
+   cookies and provider `validationKey`. If that login flow exposes a renewable OAuth
+   bundle and device identity, those are captured too. The resulting session is
+   encrypted at `O2_SESSION_FILE` and Chromium is then closed.
 5. Use **Session status / test / logout** in the admin panel to verify or clear
    the session.
+
+The Chromium profile is persisted under `/config/playwright-o2-profile/<provider>`
+so a later assisted login can reuse the provider session. An explicit logout from
+the admin panel removes both the encrypted gateway session and this browser profile.
+
+### Automatic session renewal
+
+The gateway supports two renewal paths:
+
+1. If a `401` response contains a rotated OAuth bundle and `JSESSIONID`, the gateway
+   performs `POST /sapi/login/oauth`, stores the new `validationKey` and retries the
+   original operation once.
+2. Web logins normally expose only cookies and `validationKey`. In that case the
+   gateway reopens the persisted Chromium profile headlessly, reuses its SSO session
+   and captures a fresh provider session without showing noVNC.
+
+Sessions are also kept active preventively before the provider's idle window expires.
+The gateway makes a lightweight authenticated API request every 5 minutes by default.
+Set `O2_SESSION_KEEPALIVE_SECONDS=0` to disable this behavior.
+
+Concurrent WebDAV requests share a single renewal, avoiding parallel token rotation
+or multiple Chromium processes. Human intervention is required only when both the API
+credentials and the persisted browser SSO session have expired.
 
 Notes:
 
@@ -157,6 +181,10 @@ selected provider:
     {"name": "...", "value": "...", "domain": "<provider-host>", "path": "/"}
   ],
   "userAgent": "Mozilla/5.0 ...",
+  "oauthBundle": "...",
+  "deviceId": "...",
+  "deviceName": "...",
+  "encryptionToken": "...",
   "createdAt": "2026-07-04T12:00:00Z"
 }
 ```
@@ -164,6 +192,10 @@ selected provider:
 Import it through the admin panel's manual import action (or place it at
 `O2_SESSION_FILE`). The gateway validates and encrypts it the same way as the
 assisted flow.
+
+Legacy imports containing only cookies and `validationKey` remain compatible. They can
+renew silently only when the gateway also has a persistent browser profile created by
+an assisted login; a standalone JSON import has no browser SSO session to reuse.
 
 ## Using the WebDAV share
 
@@ -237,8 +269,9 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | `O2_API_BASE_URL` | `o2`: `https://cloud.o2online.es/sapi/`<br>`movistar`: `https://micloud.movistar.es/sapi/` | Base URL for metadata/API calls. The `O2_*` variable names are shared internal names: the default is selected from `CLOUD_PROVIDER`, unless you set an explicit custom URL. |
 | `O2_UPLOAD_BASE_URL` | `o2`: `https://upload.cloud.o2online.es/sapi/`<br>`movistar`: `https://upload.micloud.movistar.es/sapi/` | Base URL for uploads (separate host), selected from `CLOUD_PROVIDER` unless overridden. |
 | `O2_LOGIN_URL` | `o2`: `https://cloud.o2online.es/`<br>`movistar`: `https://micloud.movistar.es/` | Page Chromium opens for the interactive login, selected from `CLOUD_PROVIDER` unless overridden. |
-| `O2_SESSION_FILE` | `/config/secrets/o2-session.json` | Where the encrypted O2/Movistar session (cookies + validation key) is stored. |
+| `O2_SESSION_FILE` | `/config/secrets/o2-session.json` | Where the encrypted O2/Movistar session (cookies, validation key and renewable OAuth bundle) is stored. |
 | `O2_PLAYWRIGHT_HEADLESS` | `false` | Run the login Chromium headless. Must be `false` for the interactive VNC login to be visible. |
+| `O2_SESSION_KEEPALIVE_SECONDS` | `300` | Preventive authenticated API keepalive interval for O2/Movistar sessions. Set to `0` to disable. |
 | `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2/Movistar API HTTP requests. |
 
 For Movistar Cloud, setting the provider is enough. The gateway automatically

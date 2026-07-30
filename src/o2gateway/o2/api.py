@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import re
+import secrets
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -65,6 +66,78 @@ class O2Item:
     fingerprint: Optional[str] = None
     node: Optional[str] = None
     download_token: Optional[str] = None
+
+
+class _StreamingMultipart(httpx.AsyncByteStream):
+    def __init__(
+        self,
+        source: AsyncIterator[bytes],
+        spool_path: str,
+        size: int,
+        metadata: dict[str, Any],
+        file_name: str,
+        content_type: str,
+    ) -> None:
+        boundary = secrets.token_hex(16)
+        data = json.dumps({"data": metadata}, separators=(",", ":")).encode("utf-8")
+        disposition_name = _multipart_parameter(file_name)
+        self.prefix = (
+            "--%s\r\n"
+            "Content-Disposition: form-data; name=\"data\"\r\n"
+            "Content-Type: application/json\r\n\r\n" % boundary
+        ).encode("ascii") + data + (
+            "\r\n--%s\r\n"
+            "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+            "Content-Type: %s\r\n\r\n" % (boundary, disposition_name, content_type)
+        ).encode("utf-8")
+        self.suffix = ("\r\n--%s--\r\n" % boundary).encode("ascii")
+        self.headers = {
+            "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+            "Content-Length": str(len(self.prefix) + size + len(self.suffix)),
+        }
+        self.source = source
+        self.spool_path = spool_path
+        self.size = size
+        self.written = 0
+        self.complete = False
+        self.started = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        if self.started:
+            raise RuntimeError("streaming multipart body cannot be replayed")
+        self.started = True
+        yield self.prefix
+        with open(self.spool_path, "wb") as handle:
+            async for chunk in self.source:
+                if not chunk:
+                    continue
+                self._count(chunk)
+                handle.write(chunk)
+                yield chunk
+        self._finish()
+        yield self.suffix
+
+    async def finish_spooling(self) -> None:
+        if self.complete:
+            return
+        mode = "ab" if self.started else "wb"
+        with open(self.spool_path, mode) as handle:
+            async for chunk in self.source:
+                if not chunk:
+                    continue
+                self._count(chunk)
+                handle.write(chunk)
+        self._finish()
+
+    def _count(self, chunk: bytes) -> None:
+        self.written += len(chunk)
+        if self.written > self.size:
+            raise CloudError("upload body exceeds Content-Length")
+
+    def _finish(self) -> None:
+        if self.written != self.size:
+            raise CloudError("upload body does not match Content-Length")
+        self.complete = True
 
 
 class O2CloudApiClient:
@@ -239,20 +312,7 @@ class O2CloudApiClient:
         """
         started = time.perf_counter()
         size = Path(local_path).stat().st_size
-        metadata: dict[str, Any] = {
-            "name": name,
-            "size": size,
-            "modificationdate": "",
-            "folderid": _o2_id(parent_folder_id),
-        }
-        if media_id is not None:
-            metadata["id"] = _o2_id(media_id)
-        content_type = mimetypes.guess_type(name)[0]
-        if content_type:
-            metadata["contenttype"] = content_type
-        query = {"action": "save"}
-        if size > 200 * 1024 * 1024:
-            query["acceptasynchronous"] = "true"
+        metadata, content_type, query = _upload_details(parent_folder_id, name, size, media_id)
         response: Optional[httpx.Response] = None
         for attempt in range(2):
             session = self._require_session()
@@ -273,6 +333,66 @@ class O2CloudApiClient:
             self._capture_response_session(response, session)
             break
         assert response is not None
+        return await self._upload_response_item(response, parent_folder_id, name, size, media_id, started)
+
+    async def upload_file_stream(
+        self,
+        parent_folder_id: str,
+        name: str,
+        chunks: AsyncIterator[bytes],
+        size: int,
+        spool_path: str,
+        *,
+        media_id: Optional[str] = None,
+    ) -> O2Item:
+        """Forward an incoming WebDAV body to the provider while spooling it.
+
+        The spool is retained by the caller for the recent-upload overlay and is
+        also replayable when authentication recovery requires another request.
+        """
+        started = time.perf_counter()
+        metadata, content_type, query = _upload_details(parent_folder_id, name, size, media_id)
+        session = self._require_session()
+        stream = _StreamingMultipart(
+            chunks,
+            spool_path,
+            size,
+            metadata,
+            name,
+            content_type or "application/octet-stream",
+        )
+        headers = self._session_headers(session)
+        headers.update(
+            {
+                "Accept": "*/*",
+                "X-Requested-With": "XMLHttpRequest",
+                "Connection": "keep-alive",
+                **stream.headers,
+            }
+        )
+        try:
+            response = await self.client.post(self._upload_url(query, session), headers=headers, content=stream)
+        finally:
+            # If the provider or transport stops consuming the body early, keep
+            # draining Windows into the spool so a safe file-backed retry exists.
+            await stream.finish_spooling()
+        if response.status_code in AUTH_REJECTION_STATUSES:
+            if await self._recover_session(response, session):
+                return await self.upload_file(parent_folder_id, name, spool_path, media_id=media_id)
+            self._mark_session_expired()
+            raise CloudSessionExpired("%s rejected upload session" % self.settings.provider_label())
+        self._capture_response_session(response, session)
+        return await self._upload_response_item(response, parent_folder_id, name, size, media_id, started)
+
+    async def _upload_response_item(
+        self,
+        response: httpx.Response,
+        parent_folder_id: str,
+        name: str,
+        size: int,
+        media_id: Optional[str],
+        started: float,
+    ) -> O2Item:
         logger.info(
             "o2 upload post completed",
             extra={
@@ -761,6 +881,44 @@ def to_cloud_metadata(item: O2Item, path: str) -> CloudItemMetadata:
         etag=etag,
         raw={"mediaKind": item.media_kind, "directUrl": item.direct_url, "node": item.node, "downloadToken": item.download_token},
     )
+
+
+def _upload_details(
+    parent_folder_id: str,
+    name: str,
+    size: int,
+    media_id: Optional[str],
+) -> tuple[dict[str, Any], Optional[str], dict[str, str]]:
+    metadata: dict[str, Any] = {
+        "name": name,
+        "size": size,
+        "modificationdate": "",
+        "folderid": _o2_id(parent_folder_id),
+    }
+    if media_id is not None:
+        metadata["id"] = _o2_id(media_id)
+    content_type = mimetypes.guess_type(name)[0]
+    if content_type:
+        metadata["contenttype"] = content_type
+    query = {"action": "save"}
+    if size > 200 * 1024 * 1024:
+        query["acceptasynchronous"] = "true"
+    return metadata, content_type, query
+
+
+def _multipart_parameter(value: str) -> str:
+    output = []
+    for character in value:
+        codepoint = ord(character)
+        if character == '"':
+            output.append("%22")
+        elif character == "\\":
+            output.append("\\\\")
+        elif codepoint < 32:
+            output.append("%%%02X" % codepoint)
+        else:
+            output.append(character)
+    return "".join(output)
 
 
 def _object(value: Any) -> dict[str, Any]:

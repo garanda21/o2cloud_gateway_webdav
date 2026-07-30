@@ -60,6 +60,19 @@ def lockdiscovery(lock: WebDavLock) -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="utf-8")
 
 
+def proppatch_multistatus(href: str, request_body: bytes) -> bytes:
+    requested = etree.fromstring(request_body)
+    root = etree.Element("{%s}multistatus" % DAV, nsmap=NSMAP)
+    response = etree.SubElement(root, "{%s}response" % DAV)
+    etree.SubElement(response, "{%s}href" % DAV).text = href
+    propstat = etree.SubElement(response, "{%s}propstat" % DAV)
+    response_props = etree.SubElement(propstat, "{%s}prop" % DAV)
+    for prop in requested.xpath("//*[local-name()='prop']/*"):
+        etree.SubElement(response_props, prop.tag)
+    etree.SubElement(propstat, "{%s}status" % DAV).text = "HTTP/1.1 200 OK"
+    return etree.tostring(root, xml_declaration=True, encoding="utf-8")
+
+
 def error_response(message: str) -> bytes:
     root = etree.Element("{%s}error" % DAV, nsmap=NSMAP)
     etree.SubElement(root, "{%s}responsedescription" % DAV).text = message
@@ -76,4 +89,3 @@ def http_date(value: Optional[datetime]) -> str:
     if value is None:
         value = datetime.now(timezone.utc)
     return format_datetime(value.astimezone(timezone.utc), usegmt=True)
-

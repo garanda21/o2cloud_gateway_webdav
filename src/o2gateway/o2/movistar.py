@@ -38,11 +38,34 @@ class MovistarCloudApiClient(O2CloudApiClient):
             for item in details:
                 if item.id in seen:
                     continue
-                seen.add(item.id)
                 if item.parent_id and _o2_id(item.parent_id) != _o2_id(folder_id):
                     continue
+                seen.add(item.id)
                 output.append(item)
             if not data.get("more") or len(media) < PAGE_SIZE:
+                break
+
+        for offset in range(0, 100000, PAGE_SIZE):
+            payload = await self._json(
+                "POST",
+                "media/picture",
+                {
+                    "action": "get",
+                    "folderid": folder_id,
+                    "limit": str(PAGE_SIZE),
+                    "offset": str(offset),
+                },
+                {"data": {"fields": []}},
+            )
+            pictures = self._items_from_payload(payload, ("pictures", "media", "images", "items"))
+            for item in pictures:
+                if item.id in seen:
+                    continue
+                if item.parent_id and _o2_id(item.parent_id) != _o2_id(folder_id):
+                    continue
+                seen.add(item.id)
+                output.append(item)
+            if len(pictures) < PAGE_SIZE:
                 break
         return output
 
@@ -71,9 +94,12 @@ class MovistarCloudApiClient(O2CloudApiClient):
 
     async def _file_details(self, ids: list[str]) -> list[O2Item]:
         payload = await self._json("POST", "media/file", {"action": "get"}, {"data": {"ids": [_o2_id(item_id) for item_id in ids]}})
+        return self._items_from_payload(payload, ("files", "media", "items"))
+
+    def _items_from_payload(self, payload: dict[str, Any], array_names: tuple[str, ...]) -> list[O2Item]:
         data = _object(payload.get("data"))
         media_server = _first_media_string(data, "mediaserverurl") or self.settings.o2_api_base_url.split("/sapi")[0]
-        files = _first_array(data, "files", "media", "items") or _first_array(payload, "files", "media", "items")
+        files = _first_array(data, *array_names) or _first_array(payload, *array_names)
         output: list[O2Item] = []
         for file_item in files:
             item_id = (_media_id_candidates(file_item) or [""])[0]

@@ -12,7 +12,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from o2gateway.cloud.base import CloudFileStore, CloudItemMetadata, normalize_cloud_path, parent_path
 from o2gateway.operations.errors import (
-    CloudAlreadyExists,
+    CloudConflict,
     CloudError,
     CloudForbidden,
     CloudNotFound,
@@ -188,6 +188,7 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
         async for _ in request.stream():
             pass
         return Response(status_code=204)
+    await _require_parent_collection(store, cloud_path)
     max_bytes = settings.upload_max_file_mb * 1024 * 1024
     Path(settings.upload_spool_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix="upload-", suffix=".tmp", dir=settings.upload_spool_dir)
@@ -233,9 +234,17 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
 
 async def _mkcol(store: CloudFileStore, cloud_path: str) -> Response:
     if await store.get_metadata(cloud_path) is not None:
-        raise CloudAlreadyExists(cloud_path)
+        return Response(status_code=405)
+    await _require_parent_collection(store, cloud_path)
     await store.create_folder(cloud_path)
     return Response(status_code=201)
+
+
+async def _require_parent_collection(store: CloudFileStore, cloud_path: str) -> None:
+    parent = parent_path(cloud_path)
+    metadata = await store.get_metadata(parent)
+    if metadata is None or not metadata.is_folder:
+        raise CloudConflict("parent collection does not exist: %s" % parent)
 
 
 async def _delete(store: CloudFileStore, cloud_path: str) -> Response:

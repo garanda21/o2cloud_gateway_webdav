@@ -6,7 +6,6 @@ import os
 import shutil
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator, Callable, Coroutine, Optional
 from uuid import uuid4
@@ -25,7 +24,6 @@ LOCAL_READ_CHUNK_SIZE = 1024 * 1024
 # asíncrona (~4-10s, MED-1017 mientras tanto) y su listado de carpeta puede
 # tardar >60s en reflejar cambios, así que el overlay es la fuente de verdad
 # para el cliente WebDAV hasta que el remoto se pone al día.
-PENDING_CREATE = "pending_create"  # placeholder local (PUT de 0 bytes de Finder); nunca subido
 UPLOADED = "uploaded"  # subido con éxito; visible desde overlay hasta que el listado remoto lo muestre
 PENDING_DELETE = "pending_delete"  # borrado aceptado; oculto hasta que el remoto deje de listarlo
 
@@ -78,7 +76,7 @@ class O2CloudFileStore:
                     self._drop_entry(child_path)
                     overlay_children.pop(child_path, None)
                 else:
-                    # El overlay gana (placeholder local o fila remota desfasada).
+                    # El overlay gana mientras el listado remoto siga desfasado.
                     continue
             self._path_to_item[child_path] = item
             metadata = to_cloud_metadata(item, child_path)
@@ -158,13 +156,7 @@ class O2CloudFileStore:
         parent = await self._item_for_path(parent_path(normalized))
         if parent is None or not parent.is_folder:
             raise CloudNotFound(parent_path(normalized))
-        size = os.path.getsize(local_tmp_path)
         remote_target = await self._remote_target_id(normalized, overwrite)
-        if size == 0:
-            # Placeholder de Finder (crea con PUT vacío y manda el contenido en un
-            # segundo PUT). Nunca se sube al proveedor: un media de 0 bytes queda
-            # ~10s en ventana MED-1017 y bloquea el flujo posterior del cliente.
-            return self._store_pending_create(normalized, parent.id, remote_target)
         uploaded = await self._upload_with_validation_retry(parent.id, basename(normalized), local_tmp_path, remote_target)
         entry = self._store_uploaded(normalized, uploaded, local_tmp_path, parent.id)
         await self.cache.invalidate(parent_path(normalized), normalized)
@@ -181,9 +173,6 @@ class O2CloudFileStore:
             item = entry.item
             self._drop_entry(normalized)
             await self.cache.invalidate(normalized, parent_path(normalized))
-            if entry.state == PENDING_CREATE and remote_id is None:
-                # El placeholder nunca llegó al proveedor: borrado puramente local.
-                return
             if remote_id is None:
                 # Subida sin id remoto (formas de respuesta antiguas de O2): localizar
                 # por nombre+tamaño antes de borrar para no tocar un archivo ajeno.
@@ -248,11 +237,6 @@ class O2CloudFileStore:
         if entry is None:
             return None
         if time.time() >= entry.expires_at:
-            if entry.state == PENDING_CREATE:
-                logger.warning(
-                    "pending create expired without content",
-                    extra={"path": normalized, "remoteId": entry.remote_id},
-                )
             self._drop_entry(normalized)
             return None
         return entry
@@ -296,31 +280,6 @@ class O2CloudFileStore:
                 self._drop_entry(path)
                 if entry.remote_id is not None:
                     self._hidden_remote_ids.pop(entry.remote_id, None)
-
-    def _store_pending_create(self, path: str, parent_folder_id: str, remote_target: Optional[str]) -> CloudItemMetadata:
-        normalized = normalize_cloud_path(path)
-        self._drop_entry(normalized)
-        item = O2Item(
-            id=remote_target or ("pending:create:%s" % uuid4().hex),
-            name=basename(normalized),
-            parent_id=parent_folder_id,
-            is_folder=False,
-            size=0,
-            modified_at=datetime.now(timezone.utc),
-        )
-        metadata = to_cloud_metadata(item, normalized)
-        self._overlay[normalized] = OverlayEntry(
-            state=PENDING_CREATE,
-            item=item,
-            metadata=metadata,
-            local_path=None,
-            remote_id=remote_target,
-            parent_folder_id=parent_folder_id,
-            expires_at=time.time() + self.settings.upload_recent_cache_ttl_seconds,
-        )
-        self._path_to_item[normalized] = item
-        logger.info("pending create stored", extra={"path": normalized, "remoteId": remote_target})
-        return metadata
 
     def _store_uploaded(self, path: str, uploaded: O2Item, local_tmp_path: str, parent_folder_id: str) -> OverlayEntry:
         normalized = normalize_cloud_path(path)
@@ -458,7 +417,6 @@ class O2CloudFileStore:
                 ),
                 "o2-rename-remote",
             )
-        # PENDING_CREATE nunca llegó al remoto: renombrar es puramente local.
         return metadata
 
     async def _delete_remote(self, path: str, item: O2Item) -> None:

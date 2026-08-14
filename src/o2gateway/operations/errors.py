@@ -21,6 +21,10 @@ class CloudAlreadyExists(CloudError):
     status_code = 409
 
 
+class CloudConflict(CloudError):
+    status_code = 409
+
+
 class CloudForbidden(CloudError):
     status_code = 403
 
@@ -49,4 +53,3 @@ class CloudTimeout(CloudError):
 
 class CloudUnsupported(CloudError):
     status_code = 501
-

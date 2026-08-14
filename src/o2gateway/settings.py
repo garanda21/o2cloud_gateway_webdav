@@ -67,9 +67,9 @@ class Settings(BaseSettings):
 
     upload_max_file_mb: int = 10240
     upload_spool_dir: str = "/cache/uploads"
-    # TTL de seguridad de las entradas del overlay local (placeholders de Finder y
-    # subidas recientes); normalmente se retiran antes, cuando el listado remoto
-    # las refleja. El listado de Movistar puede tardar >60s en ponerse al día.
+    # TTL de seguridad de las subidas recientes en el overlay local; normalmente
+    # se retiran antes, cuando el listado remoto las refleja. El listado de
+    # Movistar puede tardar >60s en ponerse al día.
     upload_recent_cache_ttl_seconds: int = 900
     upload_recent_cache_max_file_mb: int = 256
     # Presupuesto de reintentos para operaciones que chocan con la ventana de

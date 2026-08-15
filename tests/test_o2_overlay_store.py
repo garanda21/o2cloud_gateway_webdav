@@ -10,6 +10,7 @@ Movistar (Funambol sapi), medido empíricamente:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 
 from o2gateway.o2.api import O2Item
@@ -31,6 +32,8 @@ class FakeMovistarApi:
         self.unvalidated: set[str] = set()
         self.upload_calls: list[dict] = []
         self.trash_calls: list[str] = []
+        self.stream_upload_calls: list[dict] = []
+        self.reject_next_stream = False
         self._sequence = 0
 
     def _next_id(self) -> str:
@@ -84,6 +87,32 @@ class FakeMovistarApi:
         self.unvalidated.add(item.id)
         return item
 
+    async def upload_file_stream(self, parent_folder_id, name, chunks, size, spool_path, *, media_id=None):
+        content = bytearray()
+        with open(spool_path, "wb") as handle:
+            async for chunk in chunks:
+                content.extend(chunk)
+                handle.write(chunk)
+        self.stream_upload_calls.append({"name": name, "media_id": media_id, "size": len(content)})
+        assert len(content) == size
+        if self.reject_next_stream:
+            self.reject_next_stream = False
+            raise CloudMediaNotValidated("MED-1017")
+        return self._save_upload(parent_folder_id, name, bytes(content), media_id)
+
+    def _save_upload(self, parent_folder_id, name, content, media_id):
+        if media_id is not None:
+            if media_id in self.unvalidated:
+                raise CloudMediaNotValidated("MED-1017")
+            assert media_id in self.files
+            item = O2Item(media_id, name, parent_folder_id, False, size=len(content))
+        else:
+            item = O2Item(self._next_id(), name, parent_folder_id, False, size=len(content))
+        self.files[item.id] = item
+        self.contents[item.id] = content
+        self.unvalidated.add(item.id)
+        return item
+
     async def download(self, item, byte_range=None):
         content = self.contents[item.id]
         if byte_range is not None:
@@ -129,6 +158,36 @@ async def build(tmp_path, **overrides):
     return api, store
 
 
+class MemoryCache:
+    def __init__(self) -> None:
+        self.items = {}
+
+    async def get(self, path):
+        return self.items.get(path)
+
+    async def put(self, item):
+        self.items[item.path] = item
+
+    async def put_negative(self, path):
+        self.items.pop(path, None)
+
+    async def invalidate(self, *paths):
+        for path in paths:
+            self.items.pop(path, None)
+
+
+def build_stream_store(tmp_path):
+    settings = Settings(
+        cache_dir=str(tmp_path / "cache"),
+        upload_recent_cache_max_file_mb=1,
+        upload_recent_cache_ttl_seconds=900,
+        upload_overwrite_retry_seconds=8.0,
+    )
+    api = FakeMovistarApi()
+    store = O2CloudFileStore(api, MemoryCache(), settings)  # type: ignore[arg-type]
+    return api, store
+
+
 async def drain(store):
     while store._background_tasks:
         await asyncio.gather(*list(store._background_tasks), return_exceptions=True)
@@ -166,6 +225,39 @@ async def test_finder_copy_sequence_placeholder_then_content(tmp_path):
     listed = await store.list("/")
     assert [(item.name, item.size) for item in listed] == [("informe.txt", 26)]
     assert store._overlay == {}
+
+
+async def test_stream_upload_forwards_once_and_keeps_overlay_with_hardlink(tmp_path):
+    api, store = build_stream_store(tmp_path)
+    spool = tmp_path / "incoming.tmp"
+
+    async def chunks():
+        yield b"streamed "
+        yield b"content"
+
+    metadata = await store.upload_stream("/fast.txt", chunks(), 16, str(spool))
+
+    assert metadata.size == 16
+    assert api.stream_upload_calls == [{"name": "fast.txt", "media_id": None, "size": 16}]
+    assert api.upload_calls == []
+    overlay_path = store._overlay["/fast.txt"].local_path
+    assert overlay_path is not None
+    assert os.stat(spool).st_ino == os.stat(overlay_path).st_ino
+
+
+async def test_stream_upload_replays_spool_after_media_validation_error(tmp_path):
+    api, store = build_stream_store(tmp_path)
+    api.reject_next_stream = True
+    spool = tmp_path / "retry.tmp"
+
+    async def chunks():
+        yield b"retry me"
+
+    metadata = await store.upload_stream("/retry.txt", chunks(), 8, str(spool))
+
+    assert metadata.size == 8
+    assert api.stream_upload_calls == [{"name": "retry.txt", "media_id": None, "size": 8}]
+    assert api.upload_calls == [{"name": "retry.txt", "media_id": None, "size": 8}]
 
 
 async def test_placeholder_delete_never_touches_remote(tmp_path):

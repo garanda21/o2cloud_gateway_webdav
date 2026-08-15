@@ -163,6 +163,43 @@ class O2CloudFileStore:
         await self.cache.put(entry.metadata)
         return entry.metadata
 
+    async def upload_stream(
+        self,
+        path: str,
+        chunks: AsyncIterator[bytes],
+        size: int,
+        local_tmp_path: str,
+        *,
+        overwrite: bool = True,
+    ) -> CloudItemMetadata:
+        normalized = normalize_cloud_path(path)
+        parent = await self._item_for_path(parent_path(normalized))
+        if parent is None or not parent.is_folder:
+            raise CloudNotFound(parent_path(normalized))
+        remote_target = await self._remote_target_id(normalized, overwrite)
+        if size == 0:
+            return self._store_pending_create(normalized, parent.id, remote_target)
+        try:
+            uploaded = await self.api.upload_file_stream(
+                parent.id,
+                basename(normalized),
+                chunks,
+                size,
+                local_tmp_path,
+                media_id=remote_target,
+            )
+        except CloudMediaNotValidated:
+            uploaded = await self._upload_with_validation_retry(
+                parent.id,
+                basename(normalized),
+                local_tmp_path,
+                remote_target,
+            )
+        entry = self._store_uploaded(normalized, uploaded, local_tmp_path, parent.id)
+        await self.cache.invalidate(parent_path(normalized), normalized)
+        await self.cache.put(entry.metadata)
+        return entry.metadata
+
     async def delete(self, path: str, *, soft_delete: bool = True) -> None:
         normalized = normalize_cloud_path(path)
         entry = self._entry(normalized)
@@ -288,7 +325,10 @@ class O2CloudFileStore:
         local_copy: Optional[str] = None
         if size <= self.settings.upload_recent_cache_max_file_mb * 1024 * 1024:
             target = self._spool_dir() / ("upload-%s.tmp" % uuid4().hex)
-            shutil.copyfile(local_tmp_path, target)
+            try:
+                os.link(local_tmp_path, target)
+            except OSError:
+                shutil.copyfile(local_tmp_path, target)
             local_copy = str(target)
         remote_id = None if uploaded.id.startswith("pending:") else uploaded.id
         item = replace(uploaded, name=basename(normalized), parent_id=parent_folder_id, size=size)

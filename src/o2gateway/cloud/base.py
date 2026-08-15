@@ -50,6 +50,17 @@ class CloudFileStore(Protocol):
     async def upload(self, path: str, local_tmp_path: str, *, overwrite: bool = True) -> CloudItemMetadata:
         ...
 
+    async def upload_stream(
+        self,
+        path: str,
+        chunks: AsyncIterator[bytes],
+        size: int,
+        local_tmp_path: str,
+        *,
+        overwrite: bool = True,
+    ) -> CloudItemMetadata:
+        ...
+
     async def move(self, source: str, destination: str, *, overwrite: bool = False) -> CloudItemMetadata:
         ...
 
@@ -93,4 +104,3 @@ def parent_path(path: str) -> str:
 def basename(path: str) -> str:
     normalized = normalize_cloud_path(path)
     return "" if normalized == "/" else PurePosixPath(normalized).name
-

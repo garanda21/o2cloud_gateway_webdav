@@ -54,6 +54,8 @@ The gateway is a single FastAPI/ASGI application (served by Uvicorn) that:
 3. Translates WebDAV operations into O2/Movistar Cloud API calls, caching metadata in a
    local SQLite database to keep listings fast.
 4. Stores the selected provider's session (cookies + validation key) encrypted on disk.
+5. Streams uploads with a known `Content-Length` to O2/Movistar while writing the
+   recovery spool concurrently. Chunked uploads retain the file-backed fallback path.
 
 The container also runs a headless X server (`Xvfb`) + `fluxbox` + `x11vnc` +
 `websockify`/`noVNC` so the interactive Chromium login can be driven from your

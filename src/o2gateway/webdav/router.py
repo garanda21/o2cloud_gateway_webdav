@@ -5,7 +5,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable
+from typing import AsyncIterator, Callable, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
@@ -190,12 +190,40 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
         return Response(status_code=204)
     await _require_parent_collection(store, cloud_path)
     max_bytes = settings.upload_max_file_mb * 1024 * 1024
+    content_length = _request_content_length(request)
+    if content_length is not None and content_length > max_bytes:
+        raise CloudForbidden("upload exceeds configured limit")
     Path(settings.upload_spool_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix="upload-", suffix=".tmp", dir=settings.upload_spool_dir)
-    written = 0
+    os.close(fd)
     try:
+        existed = await store.get_metadata(cloud_path)
+        stream_upload = getattr(store, "upload_stream", None)
+        if content_length is not None and content_length > 0 and callable(stream_upload):
+            upload_started = time.perf_counter()
+            item = await stream_upload(
+                cloud_path,
+                _limited_request_stream(request, max_bytes),
+                content_length,
+                tmp_path,
+                overwrite=True,
+            )
+            logger.info(
+                "webdav streaming upload completed",
+                extra={
+                    "operation_id": operation_id,
+                    "path": cloud_path,
+                    "bytesIn": content_length,
+                    "statusCode": 204 if existed else 201,
+                    "durationMs": round((time.perf_counter() - upload_started) * 1000, 2),
+                },
+            )
+            headers = {"ETag": item.etag} if item.etag else {}
+            return Response(status_code=204 if existed else 201, headers=headers)
+
+        written = 0
         read_started = time.perf_counter()
-        with os.fdopen(fd, "wb") as handle:
+        with open(tmp_path, "wb") as handle:
             async for chunk in request.stream():
                 written += len(chunk)
                 if written > max_bytes:
@@ -210,7 +238,6 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
                 "durationMs": round((time.perf_counter() - read_started) * 1000, 2),
             },
         )
-        existed = await store.get_metadata(cloud_path)
         upload_started = time.perf_counter()
         item = await store.upload(cloud_path, tmp_path, overwrite=True)
         logger.info(
@@ -230,6 +257,28 @@ async def _put(settings: Settings, store: CloudFileStore, cloud_path: str, reque
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def _request_content_length(request: Request) -> Optional[int]:
+    value = request.headers.get("content-length")
+    if value is None:
+        return None
+    try:
+        size = int(value)
+    except ValueError as ex:
+        raise ValueError("invalid Content-Length") from ex
+    if size < 0:
+        raise ValueError("invalid Content-Length")
+    return size
+
+
+async def _limited_request_stream(request: Request, max_bytes: int) -> AsyncIterator[bytes]:
+    written = 0
+    async for chunk in request.stream():
+        written += len(chunk)
+        if written > max_bytes:
+            raise CloudForbidden("upload exceeds configured limit")
+        yield chunk
 
 
 async def _mkcol(store: CloudFileStore, cloud_path: str) -> Response:

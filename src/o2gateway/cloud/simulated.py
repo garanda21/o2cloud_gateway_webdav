@@ -76,6 +76,26 @@ class SimulatedCloudFileStore:
             shutil.copyfile(local_tmp_path, dest)
             return self._metadata(dest)
 
+    async def upload_stream(
+        self,
+        path: str,
+        chunks: AsyncIterator[bytes],
+        size: int,
+        local_tmp_path: str,
+        *,
+        overwrite: bool = True,
+    ) -> CloudItemMetadata:
+        written = 0
+        with open(local_tmp_path, "wb") as handle:
+            async for chunk in chunks:
+                written += len(chunk)
+                if written > size:
+                    raise CloudForbidden("upload body exceeds Content-Length")
+                handle.write(chunk)
+        if written != size:
+            raise CloudForbidden("upload body does not match Content-Length")
+        return await self.upload(path, local_tmp_path, overwrite=overwrite)
+
     async def move(self, source: str, destination: str, *, overwrite: bool = False) -> CloudItemMetadata:
         async with self._lock:
             src = self._to_local(source)
@@ -183,4 +203,3 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
-

@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     novnc_port: int = 6080
     novnc_path: str = "/vnc.html?autoconnect=true&resize=scale&reconnect=true"
 
+    telegram_bot_token: Optional[str] = None
+    telegram_bot_token_file: Optional[str] = "/run/secrets/telegram_bot_token"
+    telegram_chat_id: Optional[str] = None
+    telegram_alert_check_seconds: int = 15
+    telegram_alert_retry_seconds: int = 300
+
+    app_version: Optional[str] = None
+    app_commit: Optional[str] = None
+
     webdav_enabled: bool = True
     webdav_path_base: str = "/dav"
     webdav_username: str = "o2dav"

@@ -3,255 +3,386 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>O2Cloud WebDAV Gateway</title>
+    <meta name="theme-color" content="#081d38">
+    <title>Panel · O2Cloud WebDAV Gateway</title>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 0; background: #f4f6f8; color: #1f2933; }
-      header { background: #102a43; color: white; padding: 16px 24px; display: flex; gap: 16px; justify-content: space-between; align-items: center; }
-      main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
-      section { background: white; border: 1px solid #d9e2ec; border-radius: 8px; padding: 18px; margin-bottom: 16px; min-width: 0; }
-      dl { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr); gap: 8px 16px; margin: 0; }
-      dt { font-weight: 700; color: #52606d; }
-      dd { margin: 0; overflow-wrap: anywhere; }
-      button { padding: 8px 12px; border: 1px solid #9fb3c8; border-radius: 6px; background: #fff; cursor: pointer; }
-      button.primary { background: #1769aa; color: white; border-color: #1769aa; }
-      pre { background: #102a43; color: #d9e2ec; padding: 12px; overflow: auto; max-height: 360px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
-      textarea { width: 100%; min-height: 160px; box-sizing: border-box; }
-      .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-      .muted { color: #627d98; }
-      .inline-link { color: #1769aa; text-decoration: none; }
-      .inline-link:hover { text-decoration: underline; }
-      .status-note { margin-top: 8px; color: #52606d; }
-      @media (max-width: 640px) {
-        header { padding: 14px 16px; }
-        main { margin: 16px auto; }
-        dl { grid-template-columns: 1fr; gap: 2px; }
-        dd { margin-bottom: 10px; }
-        button { width: 100%; }
+      :root {
+        color-scheme: light;
+        --canvas: #f3f6fa; --surface: #fff; --surface-soft: #f8fafc;
+        --ink: #10213a; --muted: #64748b; --subtle: #94a3b8;
+        --line: #dde5ef; --line-strong: #cbd6e3; --navy: #071b35;
+        --blue: #0878e8; --blue-deep: #0563c6; --blue-soft: #e9f3ff;
+        --green: #11875d; --green-soft: #e9f8f1; --red: #c83b45; --red-soft: #fff0f1;
+        --shadow-sm: 0 1px 2px rgba(15,35,60,.04), 0 8px 24px rgba(15,35,60,.04);
+        --radius-lg: 16px; --radius-md: 11px; --radius-sm: 8px; --sidebar-width: 232px;
       }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0; min-width: 320px; background: var(--canvas); color: var(--ink);
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+      }
+      button, textarea, input { font: inherit; }
+      button, a { -webkit-tap-highlight-color: transparent; }
+      button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid rgba(8,120,232,.22); outline-offset: 2px; }
+      .icon { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .app-shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0,1fr); }
+      .sidebar {
+        min-width: 0; position: sticky; top: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+        padding: 26px 16px 18px; background: radial-gradient(circle at 10% 90%, #0b3565 0, transparent 36%), var(--navy); color: #d9e7f7;
+      }
+      .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 28px; color: #fff; }
+      .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid rgba(79,181,255,.42); border-radius: 13px; background: rgba(8,120,232,.17); color: #41b4ff; }
+      .brand-mark .icon { width: 25px; height: 25px; stroke-width: 1.65; }
+      .brand-title { display: block; font-size: 16px; font-weight: 740; letter-spacing: -.02em; }
+      .brand-subtitle { display: block; margin-top: 1px; color: #91a9c3; font-size: 11px; font-weight: 550; }
+      .nav { display: grid; gap: 5px; }
+      .nav a { display: flex; align-items: center; gap: 11px; min-height: 43px; padding: 0 13px; border-radius: 9px; color: #b9cbe0; font-size: 13px; font-weight: 590; text-decoration: none; transition: background .16s ease, color .16s ease, transform .16s ease; }
+      .nav a:hover { background: rgba(255,255,255,.07); color: #fff; transform: translateX(2px); }
+      .nav a.active { background: #0c4c91; color: #fff; box-shadow: inset 3px 0 #49b8ff; }
+      .sidebar-bottom { margin-top: auto; padding-top: 18px; border-top: 1px solid rgba(185,203,224,.18); }
+      .sidebar-bottom button { width: 100%; justify-content: flex-start; border: 0; background: transparent; color: #b9cbe0; }
+      .main-column { min-width: 0; display: flex; flex-direction: column; }
+      .content { width: 100%; max-width: 1480px; margin: 0 auto; padding: 30px clamp(22px,3vw,48px) 22px; }
+      .topbar { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin-bottom: 22px; }
+      .topbar h1 { margin: 0; font-size: clamp(25px,2.2vw,34px); line-height: 1.13; letter-spacing: -.035em; }
+      .topbar-actions { display: flex; align-items: center; gap: 10px; }
+      .telegram-state { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 6px 13px 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); cursor: pointer; }
+      .telegram-state:hover { border-color: #b9c9dc; }
+      .telegram-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; }
+      .telegram-icon .icon { width: 16px; height: 16px; }
+      .telegram-copy { display: grid; text-align: left; line-height: 1.25; }
+      .telegram-copy strong { font-size: 12px; font-weight: 680; }
+      .telegram-copy span { margin-top: 2px; color: var(--green); font-size: 11px; font-weight: 630; }
+      .telegram-state.is-off .telegram-icon { background: #91a3b8; }
+      .telegram-state.is-off .telegram-copy span { color: var(--muted); }
+      .status-dot { width: 7px; height: 7px; margin-left: 4px; border-radius: 50%; background: var(--green); }
+      .telegram-state.is-off .status-dot { background: var(--subtle); }
+      .button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: #263a54; font-size: 13px; font-weight: 640; text-decoration: none; cursor: pointer; transition: transform .14s ease, border-color .14s ease, background .14s ease, box-shadow .14s ease; }
+      .button:hover:not(:disabled) { border-color: #9fb2c9; background: #fbfdff; box-shadow: 0 4px 12px rgba(15,35,60,.07); transform: translateY(-1px); }
+      .button:active:not(:disabled) { transform: translateY(0); }
+      .button:disabled { opacity: .56; cursor: wait; }
+      .button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+      .button.primary:hover:not(:disabled) { border-color: var(--blue-deep); background: var(--blue-deep); }
+      .button.danger { border-color: #efb9bd; color: var(--red); }
+      .button.danger:hover:not(:disabled) { border-color: #e69198; background: var(--red-soft); }
+      .button.ghost { border-color: transparent; background: transparent; box-shadow: none; }
+      .button.compact { min-height: 34px; padding: 0 10px; font-size: 12px; }
+      .expired-banner { display: none; align-items: center; gap: 14px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid #ef9da4; border-radius: var(--radius-md); background: var(--red-soft); color: #8f2932; }
+      .expired-banner.visible { display: flex; animation: reveal .24s ease both; }
+      .expired-banner > .icon { width: 25px; height: 25px; }
+      .expired-copy { min-width: 0; flex: 1; }
+      .expired-copy strong { display: block; font-size: 14px; }
+      .expired-copy span { display: block; margin-top: 2px; color: #934c52; font-size: 13px; }
+      .panel { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+      .overview { display: grid; grid-template-columns: minmax(190px,.8fr) minmax(250px,1.2fr) minmax(225px,.9fr) minmax(265px,1.15fr); overflow: hidden; }
+      .overview-cell { min-width: 0; padding: 18px; border-right: 1px solid var(--line); }
+      .overview-cell:last-child { border-right: 0; }
+      .cell-label { display: block; margin-bottom: 10px; color: #41556f; font-size: 11px; font-weight: 740; letter-spacing: .045em; text-transform: uppercase; }
+      .service-state { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+      .health-mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: var(--green-soft); color: var(--green); }
+      .health-mark .icon { width: 24px; height: 24px; }
+      .service-state strong { font-size: 22px; letter-spacing: -.025em; color: var(--green); }
+      .service-state.is-error .health-mark { background: var(--red-soft); color: var(--red); }
+      .service-state.is-error strong { color: var(--red); }
+      .inline-facts { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
+      .inline-facts b { color: #31445d; font-weight: 660; }
+      .inline-facts .expired { color: var(--red); }
+      .url-box { display: flex; min-width: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-soft); }
+      .url-box code { min-width: 0; flex: 1; overflow: hidden; padding: 10px 12px; color: #344963; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      .copy-button { width: 41px; display: grid; place-items: center; border: 0; border-left: 1px solid var(--line); background: var(--surface); color: #546a84; cursor: pointer; }
+      .copy-button:hover { color: var(--blue); background: var(--blue-soft); }
+      .cell-hint { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+      .quota { display: flex; align-items: center; gap: 16px; }
+      .quota-ring { --quota-pct: 0%; width: 80px; height: 80px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--blue) var(--quota-pct),#e6ebf1 0); position: relative; }
+      .quota-ring::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #fff; }
+      .quota-ring strong { position: relative; font-size: 16px; letter-spacing: -.02em; }
+      .quota-copy { min-width: 0; }
+      .quota-copy strong { display: block; font-size: 16px; }
+      .quota-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+      .metrics { display: grid; }
+      .metric-row { min-height: 32px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid #edf1f5; color: #445971; }
+      .metric-row:last-child { border-bottom: 0; }
+      .metric-row .icon { width: 16px; height: 16px; color: #60758e; }
+      .metric-label { min-width: 0; flex: 1; font-size: 12px; }
+      .metric-value { max-width: 55%; color: #1f334c; font-size: 12px; font-weight: 620; text-align: right; overflow-wrap: anywhere; }
+      .metric-value.good { color: var(--green); }
+      .metric-value.danger { color: var(--red); }
+      .action-rail { display: flex; align-items: center; gap: 10px; margin: 16px 0; padding: 12px 16px; }
+      .action-rail h2 { margin: 0 auto 0 0; font-size: 13px; letter-spacing: -.01em; }
+      .section-panel { padding: 18px; scroll-margin-top: 16px; }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+      .section-heading h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
+      .section-heading p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+      .tab-list { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+      .tab { min-height: 34px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; }
+      .tab[aria-selected="true"] { background: #fff; color: var(--blue-deep); box-shadow: 0 1px 4px rgba(15,35,60,.11); }
+      .session-body { display: grid; grid-template-columns: minmax(0,1fr) minmax(220px,320px); gap: 18px; }
+      .login-pane { min-height: 145px; padding: 17px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
+      .login-pane[hidden] { display: none; }
+      .login-pane h3 { margin: 0 0 5px; font-size: 15px; }
+      .login-pane p { max-width: 670px; margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+      .session-note { padding: 19px; border-radius: var(--radius-md); background: linear-gradient(145deg,#f1f7ff,#f8fbff); color: #3d536d; }
+      .note-title { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: var(--blue-deep); font-size: 13px; font-weight: 700; }
+      .session-note p { margin: 0 0 9px; font-size: 12px; }
+      .session-note p:last-child { margin-bottom: 0; }
+      textarea { width: 100%; min-height: 145px; resize: vertical; margin-bottom: 12px; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--ink); font-family: "SFMono-Regular",Consolas,monospace; font-size: 12px; line-height: 1.55; }
+      .console-grid { display: grid; grid-template-columns: minmax(0,.92fr) minmax(0,1.3fr); gap: 16px; margin-top: 16px; }
+      .console-panel { min-width: 0; padding: 0; overflow: hidden; }
+      .console-heading { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+      .console-heading h2 { margin: 0; font-size: 13px; }
+      .console-actions { display: flex; align-items: center; gap: 4px; }
+      pre { height: 180px; margin: 0; overflow: auto; padding: 16px; background: #07172b; color: #c7d7e9; font-family: "SFMono-Regular",Consolas,"Liberation Mono",monospace; font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-color: #315274 transparent; }
+      pre:empty::before { content: "Sin actividad todavía."; color: #7188a2; }
+      .footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; padding: 18px 4px 0; color: #73849a; font-size: 11px; }
+      .footer strong { color: #53677f; font-weight: 650; }
+      .footer-build { display: flex; align-items: center; gap: 12px; }
+      .footer-build code { color: #526982; font-family: "SFMono-Regular",Consolas,monospace; }
+      .toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; max-width: min(420px,calc(100vw - 32px)); padding: 12px 15px; border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; box-shadow: 0 18px 50px rgba(5,25,50,.16); color: #30455f; font-size: 12px; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .18s ease, transform .18s ease; }
+      .toast.visible { opacity: 1; transform: translateY(0); }
+      .toast.error { border-color: #efb9bd; color: var(--red); }
+      @keyframes reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
+      @media (max-width: 1180px) {
+        .overview { grid-template-columns: 1fr 1.3fr; }
+        .overview-cell:nth-child(2) { border-right: 0; }
+        .overview-cell:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+        .console-grid { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 900px) {
+        .app-shell { grid-template-columns: minmax(0,1fr); }
+        .sidebar { position: static; width: 100%; max-width: 100vw; height: auto; padding: 12px 16px 10px; overflow: hidden; }
+        .brand { padding: 0 2px 10px; } .brand-mark { width: 34px; height: 34px; border-radius: 10px; }
+        .brand-mark .icon { width: 21px; height: 21px; } .brand-subtitle, .sidebar-bottom { display: none; }
+        .nav { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+        .nav::-webkit-scrollbar { display: none; } .nav a { min-width: max-content; min-height: 36px; padding: 0 11px; } .nav a:hover { transform: none; }
+        .content { padding-top: 22px; }
+      }
+      @media (max-width: 700px) {
+        .content { padding: 18px 14px 16px; } .topbar { align-items: stretch; flex-direction: column; gap: 14px; }
+        .topbar-actions { width: 100%; } .telegram-state { min-width: 0; flex: 1; }
+        .topbar-actions .button { width: 42px; padding: 0; } .topbar-actions .button span { display: none; }
+        .telegram-copy { min-width: 0; } .telegram-copy strong { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .overview { grid-template-columns: 1fr; } .overview-cell { border-right: 0; border-bottom: 1px solid var(--line); } .overview-cell:last-child { border-bottom: 0; }
+        .action-rail { align-items: stretch; flex-direction: column; } .action-rail h2 { margin-bottom: 3px; } .action-rail .button { width: 100%; }
+        .section-heading { align-items: flex-start; flex-direction: column; } .tab-list { width: 100%; } .tab { flex: 1; }
+        .session-body { grid-template-columns: 1fr; } .expired-banner { align-items: flex-start; flex-wrap: wrap; } .expired-banner .button { width: 100%; }
+        .footer { align-items: flex-start; flex-direction: column; } .toast { right: 16px; bottom: 16px; }
+      }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
     </style>
   </head>
   <body>
-    <header>
-      <strong>O2Cloud WebDAV Gateway</strong>
-      <form action="{{ settings.normalized_admin_base() }}/logout" method="post"><button>Salir</button></form>
-    </header>
-    <main>
-      <section>
-        <h2>Estado</h2>
-        <dl id="status">
-          <dt>WebDAV URL</dt><dd>{{ webdav_url }}</dd>
-          <dt>Proveedor</dt><dd>{{ provider_label }}</dd>
-          <dt>Sesión {{ provider_label }}</dt><dd>{{ "configurada" if session and session.is_authenticated else "sin configurar" }}</dd>
-          <dt>Renovación automática</dt><dd>{{ "disponible" if renewal_available else "no disponible" }}</dd>
-          <dt>Login interactivo</dt><dd id="login-state">{{ login_status.state }}</dd>
-        </dl>
-        <p class="status-note">noVNC: <a class="inline-link" href="{{ novnc_url }}" target="_blank" rel="noopener noreferrer">{{ novnc_url }}</a></p>
-      </section>
-      <section>
-        <h2>Acciones</h2>
-        <div class="actions">
-          <button class="primary" onclick="post('/api/admin/test')">Test conexión</button>
-          <button onclick="post('/api/admin/cache/clear')">Limpiar caché</button>
-          <button onclick="post('/api/admin/o2/logout')">Eliminar sesión {{ provider_label }}</button>
-        </div>
-      </section>
-      <section>
-        <h2>Sesión {{ provider_label }}</h2>
-        <div class="actions" style="margin-bottom:14px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="radio" name="o2-login-mode" value="interactive" checked onchange="switchLoginMode(this.value)">
-            Login interactivo
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="radio" name="o2-login-mode" value="import" onchange="switchLoginMode(this.value)">
-            Importar JSON
-          </label>
-        </div>
-        <div id="login-mode-interactive">
-          <p class="muted">Abre una ventana de navegador controlada donde puedes completar el login con tu teléfono, contraseña y SMS.</p>
-          <button class="primary" onclick="startO2Login()">Iniciar login {{ provider_label }}</button>
-        </div>
-        <div id="login-mode-import" style="display:none;">
-          <p class="muted">Pega JSON con validationKey, cookies, userAgent y, si está disponible, oauthBundle.</p>
-          <textarea id="session-json"></textarea>
-          <p><button onclick="importSession()">Importar sesión</button></p>
-        </div>
-      </section>
-      <section>
-        <h2>Salida</h2>
-        <pre id="output"></pre>
-      </section>
-      <section>
-        <h2>Logs recientes</h2>
-        <button onclick="loadLogs()">Actualizar logs</button>
-        <pre id="logs"></pre>
-      </section>
-    </main>
+    <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+      <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M5.4 18.3h12.8a3.8 3.8 0 0 0 .5-7.6A6.8 6.8 0 0 0 5.8 8.8a4.8 4.8 0 0 0-.4 9.5Z"/></symbol>
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="m3.5 10.5 8.5-7 8.5 7"/><path d="M5.5 9.3V21h13V9.3M9.5 21v-7h5v7"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8m-3 3 2 2m-5 1 2 2"/></symbol>
+      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h7M11 17h7"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 12h6M9 16h6"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H5v16h5M14 8l4 4-4 4M8 12h10"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.8-1L20 12M4 12l2.1 5a7 7 0 0 0 11.8-1"/></symbol>
+      <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.6 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.4-6 4 12 2.3-6H21"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v6H4V5h6"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 14v6h14v-6"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m21 3-7.5 18-3.8-7.7L2 9.5Z"/><path d="M9.7 13.3 21 3"/></symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"><svg class="icon"><use href="#i-cloud"></use></svg></span><span><span class="brand-title">O2Cloud</span><span class="brand-subtitle">WebDAV Gateway</span></span></div>
+        <nav class="nav" aria-label="Navegación del panel">
+          <a class="active" href="#resumen"><svg class="icon"><use href="#i-home"></use></svg>Resumen</a>
+          <a href="#sesion"><svg class="icon"><use href="#i-key"></use></svg>Sesión</a>
+          <a href="#gateway"><svg class="icon"><use href="#i-server"></use></svg>Gateway</a>
+          <a href="#registros"><svg class="icon"><use href="#i-file"></use></svg>Logs</a>
+          <a href="#notificaciones"><svg class="icon"><use href="#i-bell"></use></svg>Notificaciones</a>
+        </nav>
+        <form class="sidebar-bottom" action="{{ settings.normalized_admin_base() }}/logout" method="post"><button class="button" type="submit"><svg class="icon"><use href="#i-logout"></use></svg>Cerrar sesión</button></form>
+      </aside>
+
+      <div class="main-column">
+        <main class="content" id="resumen">
+          <header class="topbar">
+            <h1>O2Cloud WebDAV Gateway</h1>
+            <div class="topbar-actions">
+              <button id="telegram-state" class="telegram-state{{ '' if telegram_status.configured else ' is-off' }}" type="button" onclick="testTelegram(this)" title="Probar notificación de Telegram">
+                <span class="telegram-icon"><svg class="icon"><use href="#i-send"></use></svg></span>
+                <span class="telegram-copy"><strong>Notificaciones Telegram</strong><span id="telegram-label">{{ 'Configuradas' if telegram_status.configured else 'Sin configurar' }}</span></span><span class="status-dot"></span>
+              </button>
+              <form action="{{ settings.normalized_admin_base() }}/logout" method="post"><button class="button" type="submit" aria-label="Cerrar sesión"><svg class="icon"><use href="#i-logout"></use></svg><span>Cerrar sesión</span></button></form>
+            </div>
+          </header>
+
+          <div id="expired-banner" class="expired-banner" role="alert">
+            <svg class="icon"><use href="#i-alert"></use></svg><div class="expired-copy"><strong>La sesión ha caducado</strong><span>Es necesario iniciar sesión de nuevo para restaurar el acceso a la nube.</span></div>
+            <button class="button danger" type="button" onclick="startO2Login(this)">Iniciar sesión</button>
+          </div>
+
+          <section class="panel overview" id="gateway" aria-label="Estado del gateway">
+            <div class="overview-cell">
+              <span class="cell-label">Estado del servicio</span>
+              <div id="service-state" class="service-state"><span class="health-mark"><svg class="icon"><use href="#i-check"></use></svg></span><strong id="service-label">Activo</strong></div>
+              <div class="inline-facts"><span>Proveedor: <b id="provider-value">{{ provider_label }}</b></span><span>Sesión: <b id="session-value">{{ 'Configurada' if session and session.is_authenticated else 'Sin configurar' }}</b></span></div>
+            </div>
+            <div class="overview-cell">
+              <span class="cell-label">URL WebDAV</span><div class="url-box"><code id="webdav-url">{{ webdav_url }}</code><button class="copy-button" type="button" onclick="copyWebdavUrl(this)" aria-label="Copiar URL WebDAV" title="Copiar URL"><svg class="icon"><use href="#i-copy"></use></svg></button></div>
+              <p class="cell-hint">Utilízala en Finder, Explorer, rclone o tu cliente WebDAV.</p>
+            </div>
+            <div class="overview-cell">
+              <span class="cell-label">Cuota de almacenamiento</span><div class="quota"><div id="quota-ring" class="quota-ring"><strong id="quota-percent">—</strong></div><div class="quota-copy"><strong id="quota-used">—</strong><span id="quota-total">de —</span><span id="quota-free">— libres</span></div></div>
+            </div>
+            <div class="overview-cell">
+              <span class="cell-label">Estado operativo</span>
+              <div class="metrics">
+                <div class="metric-row"><svg class="icon"><use href="#i-refresh"></use></svg><span class="metric-label">Renovación automática</span><span id="renewal-value" class="metric-value">—</span></div>
+                <div class="metric-row"><svg class="icon"><use href="#i-key"></use></svg><span class="metric-label">Login interactivo</span><span id="login-state" class="metric-value">{{ login_status.state }}</span></div>
+                <div class="metric-row"><svg class="icon"><use href="#i-database"></use></svg><span class="metric-label">Caché de metadatos</span><span id="cache-value" class="metric-value">—</span></div>
+                <div class="metric-row"><svg class="icon"><use href="#i-lock"></use></svg><span class="metric-label">Bloqueos activos</span><span id="locks-value" class="metric-value">—</span></div>
+                <div class="metric-row"><svg class="icon"><use href="#i-alert"></use></svg><span class="metric-label">Último error</span><span id="error-value" class="metric-value">Sin errores</span></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel action-rail" aria-labelledby="actions-title">
+            <h2 id="actions-title">Acciones del sistema</h2>
+            <button class="button" type="button" onclick="runPost(this, '/api/admin/test')"><svg class="icon"><use href="#i-activity"></use></svg>Probar conexión</button>
+            <button class="button" type="button" onclick="runPost(this, '/api/admin/cache/clear')"><svg class="icon"><use href="#i-database"></use></svg>Limpiar caché</button>
+            <button class="button danger" type="button" onclick="runPost(this, '/api/admin/o2/logout')"><svg class="icon"><use href="#i-trash"></use></svg>Eliminar sesión</button>
+          </section>
+
+          <section class="panel section-panel" id="sesion" aria-labelledby="session-title">
+            <div class="section-heading"><div><h2 id="session-title">Sesión en la nube</h2><p>Inicia una sesión asistida o importa una sesión existente.</p></div><div class="tab-list" role="tablist" aria-label="Método de inicio de sesión"><button id="tab-interactive" class="tab" role="tab" aria-selected="true" aria-controls="login-interactive" type="button" onclick="switchLoginMode('interactive')">Login interactivo</button><button id="tab-import" class="tab" role="tab" aria-selected="false" aria-controls="login-import" type="button" onclick="switchLoginMode('import')">Importar JSON</button></div></div>
+            <div class="session-body">
+              <div>
+                <div id="login-interactive" class="login-pane" role="tabpanel" aria-labelledby="tab-interactive"><h3>Inicio de sesión asistido</h3><p>Abre la consola segura noVNC para completar el acceso a {{ provider_label }} con tu teléfono, contraseña y SMS.</p><button class="button primary" type="button" onclick="startO2Login(this)"><svg class="icon"><use href="#i-external"></use></svg>Abrir inicio de sesión (noVNC)</button></div>
+                <div id="login-import" class="login-pane" role="tabpanel" aria-labelledby="tab-import" hidden><h3>Importar sesión desde JSON</h3><p>Pega un JSON válido con validationKey, cookies, userAgent y, si está disponible, oauthBundle.</p><textarea id="session-json" aria-label="JSON de sesión" spellcheck="false" placeholder="{&#10;  &quot;validationKey&quot;: &quot;...&quot;,&#10;  &quot;cookies&quot;: [...]&#10;}"></textarea><button class="button primary" type="button" onclick="importSession(this)"><svg class="icon"><use href="#i-upload"></use></svg>Importar sesión</button></div>
+              </div>
+              <aside class="session-note"><div class="note-title"><svg class="icon"><use href="#i-info"></use></svg>Sobre la sesión</div><p>La sesión proporciona acceso autenticado a tu cuenta de {{ provider_label }}.</p><p>El heartbeat intenta mantenerla activa. Si caduca, Telegram te avisará cuando las notificaciones estén configuradas.</p><p><a href="{{ novnc_url }}" target="_blank" rel="noopener noreferrer">Abrir noVNC directamente</a></p></aside>
+            </div>
+          </section>
+
+          <div class="console-grid" id="registros">
+            <section class="panel console-panel" aria-labelledby="output-title"><div class="console-heading"><h2 id="output-title">Salida de la última operación</h2><button class="button ghost compact" type="button" onclick="clearOutput()">Limpiar</button></div><pre id="output" aria-live="polite"></pre></section>
+            <section class="panel console-panel" aria-labelledby="logs-title"><div class="console-heading"><h2 id="logs-title">Registros recientes</h2><div class="console-actions"><button class="button ghost compact" type="button" onclick="loadLogs(this)"><svg class="icon"><use href="#i-refresh"></use></svg>Actualizar</button><button class="button danger compact" type="button" onclick="clearLogs(this)"><svg class="icon"><use href="#i-trash"></use></svg>Limpiar logs</button></div></div><pre id="logs"></pre></section>
+          </div>
+
+          <footer class="footer" id="notificaciones"><span><strong>O2Cloud WebDAV Gateway</strong> · Panel de administración</span><span class="footer-build"><span>v{{ build_info.version }}</span>{% if build_info.commit %}<code>commit {{ build_info.commit }}</code>{% endif %}</span></footer>
+        </main>
+      </div>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
     <script>
-      const csrf = "{{ csrf }}";
-      const novncUrl = "{{ novnc_url }}";
-      const providerLabel = "{{ provider_label }}";
-      let loginPopup = null;
-      let loginPollTimer = null;
+      const csrf = {{ csrf | tojson }};
+      const novncUrl = {{ novnc_url | tojson }};
+      const providerLabel = {{ provider_label | tojson }};
+      let loginPopup = null, loginPollTimer = null, toastTimer = null;
+      const byId = (id) => document.getElementById(id);
+      const setText = (id, value) => { const node = byId(id); if (node) node.textContent = value; };
 
       function fmtBytes(bytes) {
-        if (bytes == null) return '-';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let i = 0;
-        let v = Number(bytes);
-        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-        return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+        if (bytes == null || Number.isNaN(Number(bytes))) return '—';
+        const units = ['B','KB','MB','GB','TB']; let i = 0, value = Number(bytes);
+        while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+        return `${new Intl.NumberFormat('es-ES', {maximumFractionDigits: i === 0 ? 0 : 2}).format(value)} ${units[i]}`;
       }
-
+      function pretty(value) { return typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
+      function showToast(message, isError = false) {
+        const toast = byId('toast'); toast.textContent = message; toast.classList.toggle('error', isError); toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 3600);
+      }
+      function writeOutput(value) { byId('output').textContent = pretty(value); }
+      function clearOutput() { byId('output').textContent = ''; }
       function switchLoginMode(mode) {
-        document.getElementById('login-mode-interactive').style.display = mode === 'interactive' ? '' : 'none';
-        document.getElementById('login-mode-import').style.display = mode === 'import' ? '' : 'none';
+        const interactive = mode === 'interactive'; byId('login-interactive').hidden = !interactive; byId('login-import').hidden = interactive;
+        byId('tab-interactive').setAttribute('aria-selected', String(interactive)); byId('tab-import').setAttribute('aria-selected', String(!interactive));
       }
-
-      function pretty(value) {
-        return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      async function requestJson(url, options = {}) {
+        const response = await fetch(url, options); const text = await response.text(); let payload;
+        try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = text; }
+        if (!response.ok) { const message = payload && typeof payload === 'object' ? payload.error || payload.detail : payload; throw new Error(message || `HTTP ${response.status}`); }
+        return payload;
       }
-
-      async function post(url) {
-        const out = document.getElementById('output');
-        out.textContent = 'Ejecutando...';
-        const res = await fetch(url, {method: 'POST', headers: {'x-csrf-token': csrf}});
-        const text = await res.text();
-        out.textContent = text;
-        await loadStatus();
-        await loadLoginStatus();
+      async function withBusy(button, operation) { if (button) button.disabled = true; try { return await operation(); } finally { if (button) button.disabled = false; } }
+      async function runPost(button, url) {
+        writeOutput('Ejecutando…');
+        try { const payload = await withBusy(button, () => requestJson(url, {method:'POST', headers:{'x-csrf-token':csrf}})); writeOutput(payload); showToast('Operación completada'); }
+        catch (error) { writeOutput({ok:false,error:error.message}); showToast(error.message, true); }
+        await Promise.all([loadStatus(), loadLoginStatus()]);
       }
-
-      async function importSession() {
-        const raw = document.getElementById('session-json').value;
-        const res = await fetch('/api/admin/o2/import', {method: 'POST', headers: {'content-type': 'application/json', 'x-csrf-token': csrf}, body: raw});
-        document.getElementById('output').textContent = await res.text();
-        await loadStatus();
-        await loadLoginStatus();
+      async function importSession(button) {
+        const raw = byId('session-json').value.trim(); if (!raw) { showToast('Pega primero el JSON de sesión.', true); return; }
+        try { JSON.parse(raw); } catch (_) { showToast('El JSON de sesión no es válido.', true); return; }
+        writeOutput('Importando sesión…');
+        try {
+          const payload = await withBusy(button, () => requestJson('/api/admin/o2/import', {method:'POST',headers:{'content-type':'application/json','x-csrf-token':csrf},body:raw}));
+          writeOutput(payload); byId('session-json').value = ''; showToast('Sesión importada correctamente'); await Promise.all([loadStatus(), loadLoginStatus()]);
+        } catch (error) { writeOutput({ok:false,error:error.message}); showToast(error.message, true); }
       }
-
+      function sessionLabel(state) { return ({configured:'Configurada',expired:'Caducada',missing:'Sin configurar'})[state] || state || '—'; }
       function renderStatus(data) {
-        const loginState = document.getElementById('login-state')?.textContent || 'idle';
-        const rows = [
-          ['Servicio', data.service || 'unknown'],
-          ['Proveedor', data.cloudProviderLabel || data.cloudProvider || '-'],
-          ['WebDAV URL', data.webdavUrl || '-'],
-          [`Sesión ${providerLabel}`, data.o2Session || '-'],
-          ['Renovación automática', data.renewalAvailable ? 'disponible' : 'no disponible'],
-          ['Login interactivo', loginState],
-          ['Cuota', data.quota ? `${fmtBytes(data.quota.usedBytes)} / ${fmtBytes(data.quota.totalBytes)}` : '-'],
-          ['Metadata cache', data.metadataCacheEntries ?? '-'],
-          ['Locks activos', data.activeLocks ?? '-'],
-          ['Último error', data.lastError || '-'],
-        ];
-        document.getElementById('status').innerHTML = rows
-          .map(([label, value]) => `<dt>${label}</dt><dd${label === 'Login interactivo' ? ' id="login-state"' : ''}>${String(value)}</dd>`)
-          .join('');
+        const healthy = data.service === 'ok'; byId('service-state').classList.toggle('is-error', !healthy); setText('service-label', healthy ? 'Activo' : 'Con incidencias');
+        setText('provider-value', data.cloudProviderLabel || data.cloudProvider || '—'); const sessionNode = byId('session-value'); sessionNode.textContent = sessionLabel(data.o2Session); sessionNode.classList.toggle('expired', data.o2Session === 'expired');
+        byId('expired-banner').classList.toggle('visible', data.o2Session === 'expired'); setText('webdav-url', data.webdavUrl || '—'); setText('renewal-value', data.renewalAvailable ? 'Disponible' : 'No disponible'); byId('renewal-value').classList.toggle('good', Boolean(data.renewalAvailable));
+        setText('cache-value', `${data.metadataCacheEntries ?? '—'} entradas`); setText('locks-value', data.activeLocks ?? '—'); const error = data.lastError || 'Sin errores'; setText('error-value', error); byId('error-value').classList.toggle('danger', Boolean(data.lastError)); byId('error-value').classList.toggle('good', !data.lastError);
+        const quota = data.quota; let percent = 0; if (quota && Number(quota.totalBytes) > 0) percent = Math.min(100, Math.max(0, Number(quota.usedBytes) / Number(quota.totalBytes) * 100));
+        byId('quota-ring').style.setProperty('--quota-pct', `${percent}%`); setText('quota-percent', quota ? `${Math.round(percent)}%` : '—'); setText('quota-used', quota ? fmtBytes(quota.usedBytes) : '—'); setText('quota-total', quota ? `de ${fmtBytes(quota.totalBytes)}` : 'de —'); setText('quota-free', quota ? `${fmtBytes(quota.freeBytes)} libres` : '— libres');
+        const telegram = data.telegram || {}; const telegramState = byId('telegram-state'); telegramState.classList.toggle('is-off', !telegram.configured); setText('telegram-label', telegram.configured ? 'Configuradas' : 'Sin configurar'); telegramState.title = telegram.configured ? 'Enviar una notificación de prueba' : 'Configura TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID';
       }
-
       async function loadStatus() {
-        const res = await fetch('/api/admin/status');
-        const data = await res.json();
-        renderStatus(data);
+        try { const data = await requestJson('/api/admin/status'); renderStatus(data); return data; }
+        catch (error) { byId('service-state').classList.add('is-error'); setText('service-label','Sin respuesta'); setText('error-value',error.message); byId('error-value').classList.add('danger'); return null; }
       }
-
       async function loadLoginStatus() {
-        const res = await fetch('/api/admin/o2/login/status');
-        const data = await res.json();
-        const stateText = data.state === 'running'
-          ? 'running - completa el login en noVNC'
-          : data.state === 'succeeded'
-            ? 'succeeded - sesión capturada'
-            : data.state === 'failed'
-              ? `failed - ${data.error || 'error'}`
-              : data.state;
-        const existing = document.getElementById('login-state');
-        if (existing) {
-          existing.textContent = stateText;
-        }
-        return data;
+        try {
+          const data = await requestJson('/api/admin/o2/login/status'); const labels = {idle:'En espera',running:'Completa el login en noVNC',succeeded:'Sesión capturada',failed:data.error ? `Error: ${data.error}` : 'Error'};
+          setText('login-state', labels[data.state] || data.state || '—'); byId('login-state').classList.toggle('danger', data.state === 'failed'); byId('login-state').classList.toggle('good', data.state === 'succeeded'); return data;
+        } catch (error) { setText('login-state','No disponible'); return {state:'failed',error:error.message}; }
       }
-
-      function stopLoginPolling() {
-        if (loginPollTimer) {
-          clearInterval(loginPollTimer);
-          loginPollTimer = null;
-        }
-      }
-
-      function closeLoginPopup() {
-        if (loginPopup && !loginPopup.closed) {
-          loginPopup.close();
-        }
-        loginPopup = null;
-      }
-
+      function stopLoginPolling() { if (loginPollTimer) { clearInterval(loginPollTimer); loginPollTimer = null; } }
+      function closeLoginPopup() { if (loginPopup && !loginPopup.closed) loginPopup.close(); loginPopup = null; }
       async function pollLoginStatus() {
+        const data = await loadLoginStatus(); if (data.state === 'running') return; stopLoginPolling();
+        if (data.state === 'succeeded') { closeLoginPopup(); writeOutput(`Login ${providerLabel} completado. Estado actualizado.`); showToast('Sesión capturada correctamente'); await Promise.all([loadStatus(),loadLogs()]); }
+        else if (data.state === 'failed') { writeOutput({ok:false,error:data.error}); showToast(data.error || 'El login no pudo completarse.', true); }
+      }
+      function ensureLoginPolling() { if (!loginPollTimer) loginPollTimer = setInterval(pollLoginStatus, 2000); }
+      async function startO2Login(button) {
+        writeOutput(`Iniciando login ${providerLabel}…`); loginPopup = window.open(novncUrl,'_blank','noopener,noreferrer'); if (!loginPopup) showToast(`Abre noVNC manualmente: ${novncUrl}`, true);
+        try { const payload = await withBusy(button, () => requestJson('/api/admin/o2/login',{method:'POST',headers:{'x-csrf-token':csrf}})); writeOutput(payload); ensureLoginPolling(); await pollLoginStatus(); }
+        catch (error) { closeLoginPopup(); writeOutput({ok:false,error:error.message}); showToast(error.message, true); }
+      }
+      async function loadLogs(button) {
+        try { const load = async () => { const response = await fetch('/api/admin/logs'); if (!response.ok) throw new Error(`HTTP ${response.status}`); byId('logs').textContent = await response.text(); }; if (button) await withBusy(button,load); else await load(); }
+        catch (error) { byId('logs').textContent = `No se pudieron cargar los logs: ${error.message}`; }
+      }
+      async function clearLogs(button) {
         try {
-          const data = await loadLoginStatus();
-          if (data.state === 'running') {
-            return;
-          }
-          stopLoginPolling();
-          if (data.state === 'succeeded') {
-            closeLoginPopup();
-            document.getElementById('output').textContent = `Login ${providerLabel} completado. Estado actualizado.`;
-            await loadStatus();
-            await loadLogs();
-            return;
-          }
-          if (data.state === 'failed') {
-            document.getElementById('output').textContent = pretty({ok: false, error: data.error});
-          }
-        } catch (error) {
-          stopLoginPolling();
-          document.getElementById('output').textContent = `Error consultando estado del login: ${error}`;
-        }
+          const payload = await withBusy(button, () => requestJson('/api/admin/logs/clear',{method:'POST',headers:{'x-csrf-token':csrf}}));
+          byId('logs').textContent = '';
+          showToast(payload.cleared ? 'Logs eliminados' : 'No había logs que eliminar');
+        } catch (error) { showToast(error.message, true); }
       }
-
-      function ensureLoginPolling() {
-        if (!loginPollTimer) {
-          loginPollTimer = setInterval(pollLoginStatus, 2000);
-        }
+      async function copyWebdavUrl(button) {
+        const url = byId('webdav-url').textContent;
+        try { await navigator.clipboard.writeText(url); showToast('URL WebDAV copiada'); }
+        catch (_) { const range = document.createRange(); range.selectNodeContents(byId('webdav-url')); window.getSelection().removeAllRanges(); window.getSelection().addRange(range); showToast('URL seleccionada; cópiala con Ctrl/Cmd+C'); }
+        button.blur();
       }
-
-      async function startO2Login() {
-        const out = document.getElementById('output');
-        out.textContent = `Iniciando login ${providerLabel}...`;
-        loginPopup = window.open(novncUrl, '_blank', 'noopener,noreferrer');
-        if (!loginPopup) {
-          out.textContent = `noVNC no se pudo abrir automáticamente. Ábrelo manualmente aquí: ${novncUrl}`;
-        }
-        const res = await fetch('/api/admin/o2/login', {method: 'POST', headers: {'x-csrf-token': csrf}});
-        const text = await res.text();
-        let payload = null;
-        try {
-          payload = JSON.parse(text);
-        } catch (_) {}
-        out.textContent = payload ? pretty(payload) : text;
-        if (!res.ok) {
-          closeLoginPopup();
-          return;
-        }
-        ensureLoginPolling();
-        await pollLoginStatus();
+      async function testTelegram(button) {
+        if (button.classList.contains('is-off')) { showToast('Configura TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID y reinicia el servicio.', true); return; }
+        writeOutput('Enviando notificación de prueba…');
+        try { const payload = await withBusy(button, () => requestJson('/api/admin/notifications/telegram/test',{method:'POST',headers:{'x-csrf-token':csrf}})); writeOutput(payload); showToast('Notificación de prueba enviada'); await loadStatus(); }
+        catch (error) { writeOutput({ok:false,error:error.message}); showToast(error.message, true); }
       }
-
-      async function loadLogs() {
-        const res = await fetch('/api/admin/logs');
-        document.getElementById('logs').textContent = await res.text();
-      }
-
-      async function bootstrap() {
-        await loadStatus();
-        await loadLoginStatus();
-        await loadLogs();
-        const login = await fetch('/api/admin/o2/login/status').then((res) => res.json());
-        if (login.state === 'running') {
-          ensureLoginPolling();
-        }
-      }
-
+      async function bootstrap() { const [,login] = await Promise.all([loadStatus(),loadLoginStatus(),loadLogs()]); if (login && login.state === 'running') ensureLoginPolling(); setInterval(loadStatus,30000); }
       bootstrap();
     </script>
   </body>

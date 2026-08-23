@@ -1,9 +1,14 @@
 FROM python:3.12-slim AS runtime
 
+ARG GIT_COMMIT=unknown
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    DISPLAY=:99
+    DISPLAY=:99 \
+    APP_COMMIT=${GIT_COMMIT}
+
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
 
 WORKDIR /app
 

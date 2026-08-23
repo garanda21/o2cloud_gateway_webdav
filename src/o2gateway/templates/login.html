@@ -3,26 +3,55 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>O2Cloud Gateway Login</title>
+    <meta name="theme-color" content="#071b35">
+    <title>Acceso · O2Cloud WebDAV Gateway</title>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1f2933; }
-      main { max-width: 360px; margin: 12vh auto; background: white; border: 1px solid #d8dee8; border-radius: 8px; padding: 24px; }
-      label { display: block; margin-top: 14px; font-size: 14px; }
-      input { width: 100%; box-sizing: border-box; padding: 10px; margin-top: 6px; border: 1px solid #b8c2d1; border-radius: 6px; }
-      button { margin-top: 18px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: #1769aa; color: white; font-weight: 600; }
-      .error { color: #b42318; font-size: 14px; }
+      :root { color-scheme: light; --ink:#10213a; --muted:#687b91; --line:#d9e3ee; --blue:#0878e8; --blue-deep:#0563c6; --navy:#071b35; --red:#b52f3a; }
+      * { box-sizing: border-box; }
+      body { min-width:320px; min-height:100vh; margin:0; display:grid; grid-template-columns:minmax(310px,.9fr) minmax(440px,1.1fr); background:#f4f7fb; color:var(--ink); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+      .visual { position:relative; overflow:hidden; min-height:100vh; display:flex; flex-direction:column; padding:clamp(28px,5vw,72px); background:radial-gradient(circle at 20% 85%,#0d4a88 0,transparent 38%),radial-gradient(circle at 80% 18%,rgba(23,128,223,.28),transparent 30%),var(--navy); color:#fff; }
+      .brand { display:flex; align-items:center; gap:13px; font-size:17px; font-weight:740; letter-spacing:-.02em; }
+      .mark { width:44px; height:44px; display:grid; place-items:center; border:1px solid rgba(75,180,255,.45); border-radius:14px; background:rgba(8,120,232,.16); color:#42b4ff; }
+      .icon { width:25px; height:25px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+      .visual-copy { margin:auto 0; max-width:570px; padding:80px 0; }
+      .visual h1 { margin:0; max-width:520px; font-size:clamp(38px,5vw,66px); line-height:1.01; letter-spacing:-.055em; }
+      .visual p { max-width:480px; margin:24px 0 0; color:#a9bdd4; font-size:clamp(15px,1.3vw,18px); line-height:1.7; }
+      .visual-footer { display:flex; gap:12px; color:#7793b2; font-size:11px; }
+      .login-side { min-height:100vh; display:grid; place-items:center; padding:32px; }
+      .login-card { width:min(420px,100%); }
+      .login-card h2 { margin:0; font-size:29px; line-height:1.15; letter-spacing:-.035em; }
+      .intro { margin:10px 0 30px; color:var(--muted); font-size:14px; }
+      label { display:block; margin-top:18px; color:#344a64; font-size:12px; font-weight:680; }
+      input { width:100%; min-height:48px; margin-top:7px; padding:0 13px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); font:inherit; transition:border-color .16s ease,box-shadow .16s ease; }
+      input:focus { outline:0; border-color:var(--blue); box-shadow:0 0 0 3px rgba(8,120,232,.14); }
+      button { width:100%; min-height:48px; margin-top:24px; border:1px solid var(--blue); border-radius:9px; background:var(--blue); color:#fff; font:inherit; font-size:13px; font-weight:700; cursor:pointer; transition:background .15s ease,transform .15s ease,box-shadow .15s ease; }
+      button:hover { background:var(--blue-deep); box-shadow:0 8px 20px rgba(8,120,232,.18); transform:translateY(-1px); }
+      button:focus-visible { outline:3px solid rgba(8,120,232,.22); outline-offset:2px; }
+      .error { margin:18px 0 0; padding:11px 13px; border:1px solid #efb8bd; border-radius:9px; background:#fff0f1; color:var(--red); font-size:12px; }
+      .secure-note { display:flex; align-items:center; gap:8px; margin-top:20px; color:#8292a5; font-size:11px; }
+      .secure-note .icon { width:15px; height:15px; }
+      @media(max-width:760px) { body{display:block}.visual{min-height:auto;padding:24px 22px}.visual-copy{padding:50px 0 42px}.visual h1{font-size:38px}.visual-footer{display:none}.login-side{min-height:auto;padding:46px 22px 64px;place-items:start center} }
+      @media(prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}}
     </style>
   </head>
   <body>
-    <main>
-      <h1>O2Cloud Gateway</h1>
-      {% if error %}<p class="error">{{ error }}</p>{% endif %}
-      <form method="post">
-        <label>Usuario <input name="username" autocomplete="username"></label>
-        <label>Contraseña <input name="password" type="password" autocomplete="current-password"></label>
-        <button type="submit">Entrar</button>
-      </form>
+    <section class="visual" aria-label="O2Cloud WebDAV Gateway">
+      <div class="brand"><span class="mark"><svg class="icon" viewBox="0 0 24 24"><path d="M5.4 18.3h12.8a3.8 3.8 0 0 0 .5-7.6A6.8 6.8 0 0 0 5.8 8.8a4.8 4.8 0 0 0-.4 9.5Z"/></svg></span>O2Cloud WebDAV Gateway</div>
+      <div class="visual-copy"><h1>Tu nube, accesible por WebDAV.</h1><p>Administra la sesión de {{ settings.provider_label() }}, revisa el estado del gateway y mantén tus clientes conectados desde un único lugar.</p></div>
+      <div class="visual-footer"><span>v{{ build_info.version }}</span>{% if build_info.commit %}<span>commit {{ build_info.commit }}</span>{% endif %}</div>
+    </section>
+    <main class="login-side">
+      <div class="login-card">
+        <h2>Acceso al panel</h2>
+        <p class="intro">Introduce las credenciales locales de administración.</p>
+        {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+        <form method="post">
+          <label for="username">Usuario</label><input id="username" name="username" autocomplete="username" required autofocus>
+          <label for="password">Contraseña</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="submit">Entrar al panel</button>
+        </form>
+        <p class="secure-note"><svg class="icon" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Sesión local protegida mediante cookie HttpOnly.</p>
+      </div>
     </main>
   </body>
 </html>
-

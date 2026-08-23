@@ -9,7 +9,10 @@ from fastapi.templating import Jinja2Templates
 from o2gateway.cloud.base import CloudFileStore
 from o2gateway.o2.login import O2LoginCoordinator, O2PlaywrightLoginService
 from o2gateway.o2.session import O2SessionStore, deserialize_session
+from o2gateway.operations.build_info import BuildInfo
 from o2gateway.operations.errors import CloudSessionExpired, CloudSessionMissing
+from o2gateway.operations.logging import truncate_log_file
+from o2gateway.operations.telegram import TelegramNotifier
 from o2gateway.persistence.metadata_cache import MetadataCache
 from o2gateway.security.auth import LocalAuth
 from o2gateway.settings import Settings
@@ -28,6 +31,8 @@ def create_admin_router(
     locks: WebDavLockService,
     login_service: Optional[O2PlaywrightLoginService],
     login_coordinator: O2LoginCoordinator,
+    telegram_notifier: TelegramNotifier,
+    build_info: BuildInfo,
 ) -> APIRouter:
     router = APIRouter()
     base = settings.normalized_admin_base()
@@ -67,17 +72,28 @@ def create_admin_router(
                 "novnc_url": settings.novnc_url(),
                 "login_status": login_coordinator.status(),
                 "provider_label": settings.provider_label(),
+                "telegram_status": telegram_notifier.status(),
+                "build_info": build_info,
             },
         )
 
     @router.get(base + "/login", response_class=HTMLResponse)
     async def login_page(request: Request):
-        return templates.TemplateResponse(request, "login.html", {"settings": settings, "error": None})
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"settings": settings, "error": None, "build_info": build_info},
+        )
 
     @router.post(base + "/login")
     async def login(request: Request, username: str = Form(...), password: str = Form(...)):
         if not auth.check_admin_password(username, password):
-            return templates.TemplateResponse(request, "login.html", {"settings": settings, "error": "Credenciales incorrectas"}, status_code=401)
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {"settings": settings, "error": "Credenciales incorrectas", "build_info": build_info},
+                status_code=401,
+            )
         cookie = auth.create_admin_cookie(username)
         response = RedirectResponse(base, status_code=303)
         response.set_cookie("admin_session", cookie, httponly=True, samesite="lax", secure=settings.app_base_url.startswith("https://"))
@@ -115,7 +131,8 @@ def create_admin_router(
             test_error = str(ex)
         return {
             "service": "ok",
-            "version": "0.1.0",
+            "version": build_info.version,
+            "commit": build_info.commit,
             "cloudProvider": settings.cloud_provider,
             "cloudProviderLabel": settings.provider_label(),
             "webdavUrl": settings.app_base_url.rstrip("/") + settings.normalized_webdav_base(),
@@ -127,6 +144,7 @@ def create_admin_router(
             "metadataCacheEntries": await metadata_cache.count(),
             "activeLocks": len(await locks.list_active()),
             "lastError": test_error,
+            "telegram": telegram_notifier.status(),
         }
 
     @router.get("/api/admin/o2/session")
@@ -202,6 +220,25 @@ def create_admin_router(
         await metadata_cache.clear()
         return {"ok": True}
 
+    @router.post("/api/admin/notifications/telegram/test")
+    async def telegram_test(request: Request):
+        auth_response = require_json_admin(request)
+        if auth_response:
+            return auth_response
+        if not auth.validate_csrf(request):
+            return JSONResponse({"error": "invalid csrf"}, status_code=403)
+        if not telegram_notifier.configured:
+            return JSONResponse(
+                {"ok": False, "error": "Configura TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID para activar los avisos."},
+                status_code=409,
+            )
+        if not await telegram_notifier.send_test():
+            return JSONResponse(
+                {"ok": False, "error": telegram_notifier.last_error or "No se pudo enviar la notificación."},
+                status_code=502,
+            )
+        return {"ok": True, "sentAt": telegram_notifier.last_notification_at}
+
     @router.get("/api/admin/locks")
     async def active_locks(request: Request):
         auth_response = require_json_admin(request)
@@ -219,6 +256,15 @@ def create_admin_router(
             return PlainTextResponse("")
         content = path.read_text(encoding="utf-8", errors="replace").splitlines()
         return PlainTextResponse("\n".join(content[-min(max(lines, 1), 2000) :]))
+
+    @router.post("/api/admin/logs/clear")
+    async def logs_clear(request: Request):
+        auth_response = require_json_admin(request)
+        if auth_response:
+            return auth_response
+        if not auth.validate_csrf(request):
+            return JSONResponse({"error": "invalid csrf"}, status_code=403)
+        return {"ok": True, "cleared": truncate_log_file(settings.log_file)}
 
     @router.post("/api/admin/test")
     async def test_connection(request: Request):

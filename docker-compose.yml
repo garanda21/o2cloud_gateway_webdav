@@ -27,6 +27,11 @@ services:
       # gateway is reached by IP/hostname). Must point at the published host port.
       O2_LOGIN_NOVNC_URL: "http://localhost:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true"
       CLOUD_PROVIDER: "o2"
+      # Telegram is optional. Put these values in the gitignored .env file.
+      # For the token, a read-only secret file is preferable in production.
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TELEGRAM_ALERT_CHECK_SECONDS: "15"
       CONFIG_DIR: "/config"
       CACHE_DIR: "/cache"
       DATA_DIR: "/data"
@@ -44,3 +49,6 @@ services:
       - ./secrets/webdav_password.txt:/run/secrets/webdav_password:ro
       - ./secrets/admin_password.txt:/run/secrets/admin_password:ro
       - ./secrets/app_encryption_key.txt:/run/secrets/app_encryption_key:ro
+      # Optional safer alternative to TELEGRAM_BOT_TOKEN. Create the file and
+      # uncomment this mount; the default TELEGRAM_BOT_TOKEN_FILE already points here.
+      # - ./secrets/telegram_bot_token.txt:/run/secrets/telegram_bot_token:ro

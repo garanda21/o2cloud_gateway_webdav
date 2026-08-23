@@ -91,7 +91,10 @@ class O2CloudApiClient:
 
     def _mark_session_expired(self) -> None:
         session = self.session_store.read()
-        self._expired_key = session.validation_key if session else ""
+        expired_key = session.validation_key if session else ""
+        if self._expired_key == expired_key and self._expired_at is not None:
+            return
+        self._expired_key = expired_key
         self._expired_at = datetime.now(timezone.utc).isoformat()
 
     def _clear_session_expiry(self) -> None:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -107,5 +108,37 @@ async def test_expiry_marker_is_stable_until_the_session_changes():
         assert api.session_expired_at() == first_marker
         session_store.session = O2Session(validation_key="renewed-session")
         assert api.session_expired_at() is None
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_session_expiry_event_is_emitted_immediately_once_per_session():
+    class SessionStore:
+        session = O2Session(validation_key="first-session")
+
+        def read(self):
+            return self.session
+
+    session_store = SessionStore()
+    api = O2CloudApiClient(Settings(_env_file=None), session_store)
+    try:
+        first_waiter = asyncio.create_task(api.wait_for_session_expiry())
+        await asyncio.sleep(0)
+        assert first_waiter.done() is False
+
+        api._mark_session_expired()
+        assert await asyncio.wait_for(first_waiter, timeout=0.1) == api.session_expired_at()
+
+        duplicate_waiter = asyncio.create_task(api.wait_for_session_expiry())
+        api._mark_session_expired()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(duplicate_waiter, timeout=0.01)
+
+        session_store.session = O2Session(validation_key="renewed-session")
+        assert api.session_expired_at() is None
+        renewed_waiter = asyncio.create_task(api.wait_for_session_expiry())
+        api._mark_session_expired()
+        assert await asyncio.wait_for(renewed_waiter, timeout=0.1) == api.session_expired_at()
     finally:
         await api.close()

@@ -31,7 +31,6 @@ services:
       # For the token, a read-only secret file is preferable in production.
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
-      TELEGRAM_ALERT_CHECK_SECONDS: "15"
       CONFIG_DIR: "/config"
       CACHE_DIR: "/cache"
       DATA_DIR: "/data"

@@ -67,24 +67,19 @@ class AppServices:
         while True:
             await asyncio.sleep(max(60, interval))
             await self.o2_login.keep_session_alive()
-            await self.notify_if_session_expired()
 
-    async def monitor_session_expiry(self) -> None:
-        interval = self.settings.telegram_alert_check_seconds
+    async def notify_session_expirations(self) -> None:
         if (
-            interval <= 0
-            or not self.telegram_notifier.configured
+            not self.telegram_notifier.configured
             or self.settings.cloud_provider.lower() not in {"o2", "movistar"}
         ):
             return
         while True:
-            await asyncio.sleep(max(5, interval))
-            await self.notify_if_session_expired()
-
-    async def notify_if_session_expired(self) -> None:
-        expired_at = self.o2_api.session_expired_at()
-        if expired_at:
-            await self.telegram_notifier.notify_session_expired(expired_at)
+            expired_at = await self.o2_api.wait_for_session_expiry()
+            while self.o2_api.session_expired_at() == expired_at:
+                if await self.telegram_notifier.notify_session_expired(expired_at):
+                    break
+                await asyncio.sleep(max(5, self.settings.telegram_alert_retry_seconds))
 
     def store(self) -> CloudFileStore:
         if self.settings.cloud_provider.lower() in {"o2", "movistar"}:
@@ -107,7 +102,7 @@ def create_app() -> FastAPI:
         await services.initialize()
         app.state.services = services
         keepalive_task = asyncio.create_task(services.keep_session_alive())
-        notification_task = asyncio.create_task(services.monitor_session_expiry())
+        notification_task = asyncio.create_task(services.notify_session_expirations())
         logger.info("o2cloud gateway started")
         try:
             yield

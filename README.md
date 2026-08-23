@@ -316,7 +316,6 @@ CLOUD_PROVIDER=movistar
 | `TELEGRAM_BOT_TOKEN` | _(unset)_ | Bot token issued by `@BotFather`. Prefer the file setting in production. |
 | `TELEGRAM_BOT_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | Optional file containing the bot token. `TELEGRAM_BOT_TOKEN` takes precedence. |
 | `TELEGRAM_CHAT_ID` | _(unset)_ | Private chat, group, supergroup or channel id that receives alerts. |
-| `TELEGRAM_ALERT_CHECK_SECONDS` | `15` | How frequently the gateway observes the expired-session state. Set to `0` to disable the monitor. |
 | `TELEGRAM_ALERT_RETRY_SECONDS` | `300` | Minimum delay between retry attempts after Telegram rejects or cannot receive an alert. |
 
 ### Interactive login / VNC

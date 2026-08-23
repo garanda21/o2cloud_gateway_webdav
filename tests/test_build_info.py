@@ -6,6 +6,7 @@ def test_configured_build_info_is_normalized():
 
     assert info.version == "1.2.3"
     assert info.commit == "abcdef123456"
+    assert info.repository_url == "https://github.com/garanda21/o2cloud_gateway_webdav"
 
 
 def test_unknown_commit_is_hidden():

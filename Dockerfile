@@ -1,14 +1,9 @@
 FROM python:3.12-slim AS runtime
 
-ARG GIT_COMMIT=unknown
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    DISPLAY=:99 \
-    APP_COMMIT=${GIT_COMMIT}
-
-LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+    DISPLAY=:99
 
 WORKDIR /app
 
@@ -39,6 +34,12 @@ PY
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 RUN python -m playwright install --with-deps chromium
+
+# Keep source revision metadata after the dependency layers so a new commit does
+# not invalidate the expensive OS, Python and Chromium installation cache.
+ARG GIT_COMMIT=unknown
+ENV APP_COMMIT=${GIT_COMMIT}
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
 
 COPY src /app/src
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh

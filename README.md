@@ -25,6 +25,7 @@ caching behind the scenes.
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Quick start (Docker)](#quick-start-docker)
+- [Admin panel](#admin-panel)
 - [Logging in to O2/Movistar (interactive VNC login)](#logging-in-to-o2movistar-interactive-vnc-login)
 - [Manual session import](#manual-session-import)
 - [Telegram session-expiry alerts](#telegram-session-expiry-alerts)
@@ -103,6 +104,36 @@ try the gateway without an account (see [Simulated mode](#simulated-mode-no-real
 
 Log in to the admin panel with `ADMIN_USERNAME` / the admin password, then
 authenticate to the selected cloud provider.
+
+## Admin panel
+
+The responsive administration panel provides a single view of the gateway's
+service, cloud session, quota, WebDAV URL, metadata cache, locks and most recent
+error. It also includes:
+
+- Assisted login and manual session import.
+- Connection tests, session removal and cache cleanup.
+- Telegram notification status and a test-message action.
+- Recent operation output and logs, with actions to refresh or clear the active
+  log file.
+- Gateway version and source commit in the login screen and footer, linked to
+  the GitHub repository and the exact revision respectively.
+
+The current redesign and immediate Telegram expiry alerts are available in the
+development image:
+
+```yaml
+services:
+  o2cloud-webdav:
+    image: garanda21/o2cloud_gateway_webdav:development
+```
+
+Update an existing development deployment with:
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
 
 ## Logging in to O2/Movistar (interactive VNC login)
 
@@ -202,8 +233,9 @@ an assisted login; a standalone JSON import has no browser SSO session to reuse.
 
 The gateway can notify one Telegram chat when O2/Movistar rejects the active
 session and automatic renewal cannot recover it. Notifications are deduplicated:
-only one alert is sent for a given expired session. Failed deliveries are retried
-after `TELEGRAM_ALERT_RETRY_SECONDS`.
+the expiry event triggers delivery immediately and only one alert is sent for a
+given expired session. Failed deliveries are retried after
+`TELEGRAM_ALERT_RETRY_SECONDS`; no periodic alert polling is used.
 
 1. Create a bot with Telegram's `@BotFather` and copy its token.
 2. Start a conversation with the bot. A bot cannot initiate a private conversation

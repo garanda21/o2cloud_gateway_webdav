@@ -9,12 +9,14 @@ from typing import Optional
 
 
 PACKAGE_NAME = "o2cloud-webdav-gateway"
+REPOSITORY_URL = "https://github.com/garanda21/o2cloud_gateway_webdav"
 
 
 @dataclass(frozen=True)
 class BuildInfo:
     version: str
     commit: Optional[str]
+    repository_url: str = REPOSITORY_URL
 
 
 def get_build_info(configured_version: Optional[str] = None, configured_commit: Optional[str] = None) -> BuildInfo:

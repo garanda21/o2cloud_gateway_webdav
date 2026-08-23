@@ -138,7 +138,9 @@
       .footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; padding: 18px 4px 0; color: #73849a; font-size: 11px; }
       .footer strong { color: #53677f; font-weight: 650; }
       .footer-build { display: flex; align-items: center; gap: 12px; }
-      .footer-build code { color: #526982; font-family: "SFMono-Regular",Consolas,monospace; }
+      .footer-build a { color: inherit; text-decoration: none; }
+      .footer-build a:hover { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+      .footer-build code { color: inherit; font-family: "SFMono-Regular",Consolas,monospace; }
       .toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; max-width: min(420px,calc(100vw - 32px)); padding: 12px 15px; border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; box-shadow: 0 18px 50px rgba(5,25,50,.16); color: #30455f; font-size: 12px; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .18s ease, transform .18s ease; }
       .toast.visible { opacity: 1; transform: translateY(0); }
       .toast.error { border-color: #efb9bd; color: var(--red); }
@@ -274,7 +276,7 @@
             <section class="panel console-panel" aria-labelledby="logs-title"><div class="console-heading"><h2 id="logs-title">Registros recientes</h2><div class="console-actions"><button class="button ghost compact" type="button" onclick="loadLogs(this)"><svg class="icon"><use href="#i-refresh"></use></svg>Actualizar</button><button class="button danger compact" type="button" onclick="clearLogs(this)"><svg class="icon"><use href="#i-trash"></use></svg>Limpiar logs</button></div></div><pre id="logs"></pre></section>
           </div>
 
-          <footer class="footer" id="notificaciones"><span><strong>O2Cloud WebDAV Gateway</strong> · Panel de administración</span><span class="footer-build"><span>v{{ build_info.version }}</span>{% if build_info.commit %}<code>commit {{ build_info.commit }}</code>{% endif %}</span></footer>
+          <footer class="footer" id="notificaciones"><span><strong>O2Cloud WebDAV Gateway</strong> · Panel de administración</span><span class="footer-build"><a href="{{ build_info.repository_url }}" target="_blank" rel="noopener noreferrer">v{{ build_info.version }}</a>{% if build_info.commit %}<a href="{{ build_info.repository_url }}/commit/{{ build_info.commit }}" target="_blank" rel="noopener noreferrer"><code>commit {{ build_info.commit }}</code></a>{% endif %}</span></footer>
         </main>
       </div>
     </div>

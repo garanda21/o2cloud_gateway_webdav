@@ -17,6 +17,8 @@
       .visual h1 { margin:0; max-width:520px; font-size:clamp(38px,5vw,66px); line-height:1.01; letter-spacing:-.055em; }
       .visual p { max-width:480px; margin:24px 0 0; color:#a9bdd4; font-size:clamp(15px,1.3vw,18px); line-height:1.7; }
       .visual-footer { display:flex; gap:12px; color:#7793b2; font-size:11px; }
+      .visual-footer a { color:inherit; text-decoration:none; }
+      .visual-footer a:hover { color:#b6cbe2; text-decoration:underline; text-underline-offset:3px; }
       .login-side { min-height:100vh; display:grid; place-items:center; padding:32px; }
       .login-card { width:min(420px,100%); }
       .login-card h2 { margin:0; font-size:29px; line-height:1.15; letter-spacing:-.035em; }
@@ -38,7 +40,7 @@
     <section class="visual" aria-label="O2Cloud WebDAV Gateway">
       <div class="brand"><span class="mark"><svg class="icon" viewBox="0 0 24 24"><path d="M5.4 18.3h12.8a3.8 3.8 0 0 0 .5-7.6A6.8 6.8 0 0 0 5.8 8.8a4.8 4.8 0 0 0-.4 9.5Z"/></svg></span>O2Cloud WebDAV Gateway</div>
       <div class="visual-copy"><h1>Tu nube, accesible por WebDAV.</h1><p>Administra la sesión de {{ settings.provider_label() }}, revisa el estado del gateway y mantén tus clientes conectados desde un único lugar.</p></div>
-      <div class="visual-footer"><span>v{{ build_info.version }}</span>{% if build_info.commit %}<span>commit {{ build_info.commit }}</span>{% endif %}</div>
+      <div class="visual-footer"><a href="{{ build_info.repository_url }}" target="_blank" rel="noopener noreferrer">v{{ build_info.version }}</a>{% if build_info.commit %}<a href="{{ build_info.repository_url }}/commit/{{ build_info.commit }}" target="_blank" rel="noopener noreferrer">commit {{ build_info.commit }}</a>{% endif %}</div>
     </section>
     <main class="login-side">
       <div class="login-card">

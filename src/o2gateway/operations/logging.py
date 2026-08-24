@@ -116,7 +116,7 @@ def configure_logging(level: str, log_file: str) -> None:
 def truncate_log_file(log_file: str) -> bool:
     """Empty the active log file without replacing its inode."""
     path = Path(log_file)
-    if not path.exists():
+    if not path.is_file():
         return False
     with path.open("r+", encoding="utf-8") as handle:
         handle.truncate(0)

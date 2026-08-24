@@ -37,7 +37,9 @@ services:
       SQLITE_PATH: "/data/o2cloud-gateway.db"
       WEBDAV_PATH_BASE: "/dav"
       ADMIN_PATH_BASE: "/admin"
+      ADMIN_STATUS_POLL_SECONDS: "120"
       CACHE_METADATA_TTL_SECONDS: "20"
+      CACHE_QUOTA_TTL_SECONDS: "60"
       UPLOAD_MAX_FILE_MB: "10240"
       LOG_LEVEL: "INFO"
     volumes:

@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     admin_password: Optional[str] = None
     admin_password_file: Optional[str] = "/run/secrets/admin_password"
     admin_session_secret_file: Optional[str] = "/run/secrets/app_encryption_key"
+    admin_status_poll_seconds: int = 120
 
     config_dir: str = "/config"
     cache_dir: str = "/cache"
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
 
     cache_metadata_ttl_seconds: int = 20
     cache_negative_ttl_seconds: int = 5
+    cache_quota_ttl_seconds: int = 60
     cache_max_size_mb: int = 4096
 
     upload_max_file_mb: int = 10240

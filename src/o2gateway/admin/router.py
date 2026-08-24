@@ -1,12 +1,16 @@
 from __future__ import annotations
+
+import asyncio
+import logging
 from pathlib import Path
-from typing import Optional
+from time import monotonic
+from typing import Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from o2gateway.cloud.base import CloudFileStore
+from o2gateway.cloud.base import CloudFileStore, CloudQuota
 from o2gateway.o2.login import O2LoginCoordinator, O2PlaywrightLoginService
 from o2gateway.o2.session import O2SessionStore, deserialize_session
 from o2gateway.operations.build_info import BuildInfo
@@ -20,6 +24,35 @@ from o2gateway.webdav.locks import WebDavLockService
 
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
+logger = logging.getLogger(__name__)
+
+
+class AdminQuotaCache:
+    """Collapse concurrent quota reads and reuse them for a short TTL."""
+
+    def __init__(self, ttl_seconds: float) -> None:
+        self.ttl_seconds = max(0.0, ttl_seconds)
+        self._value: Optional[CloudQuota] = None
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+
+    def _fresh_value(self) -> Optional[CloudQuota]:
+        if self._value is not None and monotonic() < self._expires_at:
+            return self._value
+        return None
+
+    async def get(self, loader: Callable[[], Awaitable[CloudQuota]], *, force: bool = False) -> CloudQuota:
+        cached = self._fresh_value()
+        if not force and cached is not None:
+            return cached
+        async with self._lock:
+            cached = self._fresh_value()
+            if not force and cached is not None:
+                return cached
+            value = await loader()
+            self._value = value
+            self._expires_at = monotonic() + self.ttl_seconds
+            return value
 
 
 def create_admin_router(
@@ -36,6 +69,7 @@ def create_admin_router(
 ) -> APIRouter:
     router = APIRouter()
     base = settings.normalized_admin_base()
+    quota_cache = AdminQuotaCache(settings.cache_quota_ttl_seconds)
 
     def is_admin(request: Request) -> bool:
         return auth.validate_admin_cookie(request.cookies.get("admin_session"))
@@ -115,7 +149,7 @@ def create_admin_router(
         test_error = None
         o2_session = "configured" if session and session.is_authenticated else "missing"
         try:
-            quota_value = await store_factory().quota()
+            quota_value = await quota_cache.get(store_factory().quota)
             quota = {
                 "usedBytes": quota_value.used_bytes,
                 "totalBytes": quota_value.total_bytes,
@@ -264,7 +298,14 @@ def create_admin_router(
             return auth_response
         if not auth.validate_csrf(request):
             return JSONResponse({"error": "invalid csrf"}, status_code=403)
-        return {"ok": True, "cleared": truncate_log_file(settings.log_file)}
+        try:
+            return {"ok": True, "cleared": truncate_log_file(settings.log_file)}
+        except OSError:
+            logger.exception("failed to truncate the configured log file")
+            return JSONResponse(
+                {"ok": False, "cleared": False, "error": "No se pudo limpiar el archivo de logs."},
+                status_code=500,
+            )
 
     @router.post("/api/admin/test")
     async def test_connection(request: Request):
@@ -275,7 +316,7 @@ def create_admin_router(
             return JSONResponse({"error": "invalid csrf"}, status_code=403)
         store: CloudFileStore = store_factory()
         items = await store.list("/")
-        quota = await store.quota()
+        quota = await quota_cache.get(store.quota, force=True)
         return {"ok": True, "rootItems": len(items), "quota": quota.__dict__}
 
     return router

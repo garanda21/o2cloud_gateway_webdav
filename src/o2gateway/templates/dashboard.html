@@ -297,7 +297,8 @@
       const csrf = {{ csrf | tojson }};
       const novncUrl = {{ novnc_url | tojson }};
       const providerLabel = {{ provider_label | tojson }};
-      let loginPopup = null, loginPollTimer = null, toastTimer = null;
+      const statusPollMs = {{ (settings.admin_status_poll_seconds * 1000) | tojson }};
+      let loginPopup = null, loginPollTimer = null, statusPollTimer = null, toastTimer = null;
       const byId = (id) => document.getElementById(id);
       const setText = (id, value) => { const node = byId(id); if (node) node.textContent = value; };
 
@@ -399,7 +400,10 @@
         try { const payload = await withBusy(button, () => requestJson('/api/admin/notifications/telegram/test',{method:'POST',headers:{'x-csrf-token':csrf}})); writeOutput(payload); showToast('Notificación de prueba enviada'); await loadStatus(); }
         catch (error) { writeOutput({ok:false,error:error.message}); showToast(error.message, true); }
       }
-      async function bootstrap() { const [,login] = await Promise.all([loadStatus(),loadLoginStatus(),loadLogs()]); if (login && login.state === 'running') ensureLoginPolling(); setInterval(loadStatus,30000); }
+      function refreshVisibleStatus() { if (statusPollMs > 0 && document.visibilityState === 'visible') void loadStatus(); }
+      function startStatusPolling() { if (statusPollMs > 0 && !statusPollTimer) statusPollTimer = setInterval(refreshVisibleStatus,statusPollMs); }
+      document.addEventListener('visibilitychange',refreshVisibleStatus);
+      async function bootstrap() { const [,login] = await Promise.all([loadStatus(),loadLoginStatus(),loadLogs()]); if (login && login.state === 'running') ensureLoginPolling(); startStatusPolling(); }
       bootstrap();
     </script>
   </body>

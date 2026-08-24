@@ -12,3 +12,7 @@ def test_truncate_log_file_preserves_file_and_clears_content(tmp_path):
 
 def test_truncate_log_file_returns_false_when_file_does_not_exist(tmp_path):
     assert truncate_log_file(str(tmp_path / "missing.log")) is False
+
+
+def test_truncate_log_file_returns_false_for_directory(tmp_path):
+    assert truncate_log_file(str(tmp_path)) is False

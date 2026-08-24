@@ -386,6 +386,7 @@ CLOUD_PROVIDER=movistar
 | `ADMIN_PASSWORD` | _(unset)_ | Inline admin password. Prefer `ADMIN_PASSWORD_FILE`. |
 | `ADMIN_PASSWORD_FILE` | `/run/secrets/admin_password` | File containing the admin password. |
 | `ADMIN_SESSION_SECRET_FILE` | `/run/secrets/app_encryption_key` | File whose contents sign admin session cookies. |
+| `ADMIN_STATUS_POLL_SECONDS` | `120` | Refresh interval for admin status while the browser tab is visible. Set to `0` to disable periodic refreshes. |
 
 ### Paths & storage
 
@@ -403,6 +404,7 @@ CLOUD_PROVIDER=movistar
 |----------|---------|-------------|
 | `CACHE_METADATA_TTL_SECONDS` | `20` | How long directory/file metadata is cached before refetching from O2/Movistar. |
 | `CACHE_NEGATIVE_TTL_SECONDS` | `5` | How long "not found" results are cached. |
+| `CACHE_QUOTA_TTL_SECONDS` | `60` | How long cloud quota results are reused across admin status requests. |
 | `CACHE_MAX_SIZE_MB` | `4096` | Max on-disk cache size in MB. |
 | `UPLOAD_MAX_FILE_MB` | `10240` | Max single-file upload size in MB. |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | Timeout for a single file download from O2/Movistar. |

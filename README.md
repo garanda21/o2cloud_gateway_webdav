@@ -1,6 +1,7 @@
 # O2/Movistar Cloud WebDAV Gateway
 
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-garanda21%2Fo2cloud__gateway__webdav-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/garanda21/o2cloud_gateway_webdav)
+[![GitHub Release](https://img.shields.io/github/v/release/garanda21/o2cloud_gateway_webdav?display_name=tag)](https://github.com/garanda21/o2cloud_gateway_webdav/releases)
 
 A Docker-first, Linux-native gateway that exposes **O2 Cloud** and **Movistar Cloud**
 (Telefónica personal cloud storage services) as a standard **WebDAV** share, plus a
@@ -35,6 +36,7 @@ caching behind the scenes.
 - [Environment variables](#environment-variables)
 - [Ports](#ports)
 - [Local development](#local-development)
+- [Releasing](#releasing)
 - [Project layout](#project-layout)
 
 ---
@@ -443,16 +445,59 @@ pytest
 uvicorn o2gateway.main:create_app --factory --reload
 ```
 
-To include the source commit in the admin footer when building the container:
+To include the release version and source commit in the admin footer when building
+the container:
 
 ```bash
-docker build --build-arg GIT_COMMIT="$(git rev-parse --short=8 HEAD)" -t o2cloud-webdav-gateway .
+docker build \
+  --build-arg APP_VERSION="0.1.0" \
+  --build-arg GIT_COMMIT="$(git rev-parse HEAD)" \
+  -t o2cloud-webdav-gateway .
 ```
 
 The package version is always shown; the commit is appended when available.
 
 The source targets Python **3.12+** and intentionally avoids newer syntax where
 practical, so local smoke tests can run on older macOS Python builds.
+
+## Releasing
+
+GitHub Releases and Docker Hub images are published together by
+`.github/workflows/release.yml`. The workflow runs only for version tags matching
+`v*.*.*`, verifies that the tagged commit belongs to `main`, runs the complete test
+suite, builds the image for `linux/amd64`, pushes it to Docker Hub and finally creates
+a GitHub Release with automatically generated notes.
+
+Configure these GitHub Actions repository secrets before publishing the first release:
+
+| Secret | Purpose |
+|--------|---------|
+| `DOCKERHUB_USERNAME` | Docker Hub account allowed to push `garanda21/o2cloud_gateway_webdav`. |
+| `DOCKERHUB_TOKEN` | Docker Hub access token with read/write permission. Do not use the account password. |
+
+Pull requests should be labelled `enhancement`, `bug` or `documentation` before
+merging. `.github/release.yml` uses those labels to organize the generated changelog;
+unlabelled changes appear under **Other changes**, and `ignore-for-release` excludes
+internal-only work.
+
+Stable releases publish version-specific tags plus `latest`:
+
+```bash
+git switch main
+git pull --ff-only
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+This publishes `0.1.0`, `v0.1.0` and `latest`. A prerelease tag such as
+`v0.2.0-rc.1` is marked as a GitHub prerelease and publishes `0.2.0-rc.1`,
+`v0.2.0-rc.1` and `development` without changing `latest`.
+
+The tag value is injected as `APP_VERSION`, while its full source revision is injected
+as `APP_COMMIT`; both link back to this repository from the admin panel. Review the
+generated release notes after publication, especially for the first release, because
+commits made directly on `main` appear in the full comparison but not necessarily as
+individual pull-request entries.
 
 ## Project layout
 

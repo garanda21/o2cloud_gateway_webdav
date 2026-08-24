@@ -37,9 +37,13 @@ RUN python -m playwright install --with-deps chromium
 
 # Keep source revision metadata after the dependency layers so a new commit does
 # not invalidate the expensive OS, Python and Chromium installation cache.
+ARG APP_VERSION=0.1.0
 ARG GIT_COMMIT=unknown
-ENV APP_COMMIT=${GIT_COMMIT}
-LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+ENV APP_VERSION=${APP_VERSION} \
+    APP_COMMIT=${GIT_COMMIT}
+LABEL org.opencontainers.image.source="https://github.com/garanda21/o2cloud_gateway_webdav" \
+      org.opencontainers.image.version=${APP_VERSION} \
+      org.opencontainers.image.revision=${GIT_COMMIT}
 
 COPY src /app/src
 COPY docker/entrypoint.sh docker/xdisplay.sh /app/docker/

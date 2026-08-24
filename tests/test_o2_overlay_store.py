@@ -134,24 +134,40 @@ async def drain(store):
         await asyncio.gather(*list(store._background_tasks), return_exceptions=True)
 
 
-async def test_finder_copy_sequence_placeholder_then_content(tmp_path):
+async def test_finder_copy_sequence_empty_file_then_content(tmp_path, monkeypatch):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda seconds: real_sleep(0.01))
     api, store = await build(tmp_path)
 
-    # 1) PUT de 0 bytes (placeholder de Finder): jamás se sube al proveedor.
-    placeholder = tmp_path / "placeholder"
-    placeholder.write_bytes(b"")
-    metadata = await store.upload("/informe.txt", str(placeholder))
+    # 1) El PUT vacío se conserva como un archivo remoto real de 0 bytes.
+    empty_file = tmp_path / "empty"
+    empty_file.write_bytes(b"")
+    metadata = await store.upload("/informe.txt", str(empty_file))
+    remote_id = metadata.id
     assert metadata.size == 0
-    assert api.upload_calls == []
+    assert api.upload_calls == [{"name": "informe.txt", "media_id": None, "size": 0}]
+    assert api.contents[remote_id] == b""
     assert (await store.get_metadata("/informe.txt")).size == 0
     assert [item.name for item in await store.list("/")] == ["informe.txt"]
 
-    # 2) Segundo PUT con el contenido: una única subida, sin media_id (no existe remoto).
+    # 2) Finder/Windows puede enviar después el contenido. La sobrescritura usa el
+    # mismo id y espera a que termine la ventana MED-1017 del archivo vacío.
     source = tmp_path / "contenido"
     source.write_bytes(b"contenido real del informe")
+
+    async def validate_soon():
+        await real_sleep(0.05)
+        api.unvalidated.clear()
+
+    task = asyncio.create_task(validate_soon())
     metadata = await store.upload("/informe.txt", str(source))
+    await task
+
     assert metadata.size == len(b"contenido real del informe")
-    assert api.upload_calls == [{"name": "informe.txt", "media_id": None, "size": 26}]
+    assert metadata.id == remote_id
+    assert api.upload_calls[-1] == {"name": "informe.txt", "media_id": remote_id, "size": 26}
+    assert all(call["media_id"] == remote_id for call in api.upload_calls[1:])
+    assert list(api.files) == [remote_id]
 
     # 3) Lecturas servidas desde el overlay aunque el listado remoto aún no lo muestre.
     chunks = []
@@ -168,17 +184,26 @@ async def test_finder_copy_sequence_placeholder_then_content(tmp_path):
     assert store._overlay == {}
 
 
-async def test_placeholder_delete_never_touches_remote(tmp_path):
+async def test_empty_file_delete_reaches_remote_after_validation(tmp_path, monkeypatch):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda seconds: real_sleep(0.01))
     api, store = await build(tmp_path)
-    placeholder = tmp_path / "placeholder"
-    placeholder.write_bytes(b"")
-    await store.upload("/borrador.txt", str(placeholder))
+    empty_file = tmp_path / "empty"
+    empty_file.write_bytes(b"")
+    metadata = await store.upload("/borrador.txt", str(empty_file))
+
+    async def validate_soon():
+        await real_sleep(0.05)
+        api.unvalidated.clear()
 
     await store.delete("/borrador.txt")
+    task = asyncio.create_task(validate_soon())
     await drain(store)
+    await task
 
-    assert api.upload_calls == []
-    assert api.trash_calls == []
+    assert api.upload_calls == [{"name": "borrador.txt", "media_id": None, "size": 0}]
+    assert api.trash_calls == [metadata.id]
+    assert api.files == {}
     assert await store.get_metadata("/borrador.txt") is None
     assert await store.list("/") == []
 
@@ -286,25 +311,43 @@ async def test_move_recent_upload_renames_remotely_by_id(tmp_path, monkeypatch):
     assert sorted(item.name for item in api.files.values()) == ["destino.txt"]
 
 
-async def test_second_copy_after_failed_first_does_not_duplicate(tmp_path):
+async def test_second_copy_after_failed_first_does_not_duplicate(tmp_path, monkeypatch):
     """Regresión del bug de campo: reintento de copia tras un intento fallido no
     debe dejar duplicados "nombre (1).txt" en el servidor."""
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda seconds: real_sleep(0.01))
     api, store = await build(tmp_path)
 
-    # Primer intento: placeholder que Finder borra al abortar la copia.
-    placeholder = tmp_path / "p1"
-    placeholder.write_bytes(b"")
-    await store.upload("/gio-test.txt", str(placeholder))
+    # Primer intento: Finder crea un archivo vacío y lo borra al abortar la copia.
+    empty_file = tmp_path / "p1"
+    empty_file.write_bytes(b"")
+    first = await store.upload("/gio-test.txt", str(empty_file))
     await store.delete("/gio-test.txt")
-    await drain(store)
 
-    # Segundo intento completo: placeholder + contenido.
-    placeholder2 = tmp_path / "p2"
-    placeholder2.write_bytes(b"")
-    await store.upload("/gio-test.txt", str(placeholder2))
+    async def validate_first_upload():
+        await real_sleep(0.05)
+        api.unvalidated.clear()
+
+    validation_task = asyncio.create_task(validate_first_upload())
+    await drain(store)
+    await validation_task
+    assert api.trash_calls == [first.id]
+
+    # Segundo intento completo: archivo vacío y posterior contenido sobre el mismo id.
+    empty_file_2 = tmp_path / "p2"
+    empty_file_2.write_bytes(b"")
+    second = await store.upload("/gio-test.txt", str(empty_file_2))
     source = tmp_path / "c"
     source.write_bytes(b"contenido definitivo")
-    await store.upload("/gio-test.txt", str(source))
 
+    async def validate_second_upload():
+        await real_sleep(0.05)
+        api.unvalidated.clear()
+
+    validation_task = asyncio.create_task(validate_second_upload())
+    completed = await store.upload("/gio-test.txt", str(source))
+    await validation_task
+
+    assert completed.id == second.id
     assert [item.name for item in api.files.values()] == ["gio-test.txt"]
     assert not any(re.search(r"\(\d+\)", item.name) for item in api.files.values())

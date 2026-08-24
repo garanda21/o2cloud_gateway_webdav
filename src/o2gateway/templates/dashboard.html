@@ -141,11 +141,19 @@
       .footer-build a { color: inherit; text-decoration: none; }
       .footer-build a:hover { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
       .footer-build code { color: inherit; font-family: "SFMono-Regular",Consolas,monospace; }
-      .toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; max-width: min(420px,calc(100vw - 32px)); padding: 12px 15px; border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; box-shadow: 0 18px 50px rgba(5,25,50,.16); color: #30455f; font-size: 12px; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .18s ease, transform .18s ease; }
+      .toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; width: min(390px,calc(100vw - 32px)); display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 11px; padding: 14px 16px; border: 1px solid #a8d9c7; border-radius: 12px; background: #f3fcf8; box-shadow: 0 18px 50px rgba(5,25,50,.18); color: #24644e; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .18s ease, transform .18s ease; }
       .toast.visible { opacity: 1; transform: translateY(0); }
-      .toast.error { border-color: #efb9bd; color: var(--red); }
+      .toast.error { border-color: #efb9bd; background: var(--red-soft); color: var(--red); }
+      .toast-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #d9f5e9; color: var(--green); }
+      .toast.error .toast-icon { background: #fbdde0; color: var(--red); }
+      .toast-icon .icon { width: 17px; height: 17px; stroke-width: 2.1; }
+      .toast-copy { min-width: 0; display: grid; gap: 2px; }
+      .toast-copy strong { color: #155b42; font-size: 13px; font-weight: 750; }
+      .toast.error .toast-copy strong { color: #a92f38; }
+      .toast-copy span { color: #47705f; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+      .toast.error .toast-copy span { color: #a24b52; }
       @keyframes reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
-      @media (max-width: 1180px) {
+      @media (max-width: 1240px) {
         .overview { grid-template-columns: 1fr 1.3fr; }
         .overview-cell:nth-child(2) { border-right: 0; }
         .overview-cell:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
@@ -255,9 +263,9 @@
 
           <section class="panel action-rail" aria-labelledby="actions-title">
             <h2 id="actions-title">Acciones del sistema</h2>
-            <button class="button" type="button" onclick="runPost(this, '/api/admin/test')"><svg class="icon"><use href="#i-activity"></use></svg>Probar conexión</button>
-            <button class="button" type="button" onclick="runPost(this, '/api/admin/cache/clear')"><svg class="icon"><use href="#i-database"></use></svg>Limpiar caché</button>
-            <button class="button danger" type="button" onclick="runPost(this, '/api/admin/o2/logout')"><svg class="icon"><use href="#i-trash"></use></svg>Eliminar sesión</button>
+            <button class="button" type="button" onclick="runPost(this, '/api/admin/test', 'Conexión correcta', 'La raíz y la cuota responden correctamente.')"><svg class="icon"><use href="#i-activity"></use></svg>Probar conexión</button>
+            <button class="button" type="button" onclick="runPost(this, '/api/admin/cache/clear', 'Caché limpiada', 'La caché de metadatos se ha vaciado correctamente.')"><svg class="icon"><use href="#i-database"></use></svg>Limpiar caché</button>
+            <button class="button danger" type="button" onclick="runPost(this, '/api/admin/o2/logout', 'Sesión eliminada', 'La sesión de la nube se ha eliminado correctamente.')"><svg class="icon"><use href="#i-trash"></use></svg>Eliminar sesión</button>
           </section>
 
           <section class="panel section-panel" id="sesion" aria-labelledby="session-title">
@@ -280,7 +288,10 @@
         </main>
       </div>
     </div>
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite">
+      <span class="toast-icon" aria-hidden="true"><svg class="icon"><use id="toast-icon-use" href="#i-check"></use></svg></span>
+      <span class="toast-copy"><strong id="toast-title">Operación completada</strong><span id="toast-message"></span></span>
+    </div>
 
     <script>
       const csrf = {{ csrf | tojson }};
@@ -297,8 +308,8 @@
         return `${new Intl.NumberFormat('es-ES', {maximumFractionDigits: i === 0 ? 0 : 2}).format(value)} ${units[i]}`;
       }
       function pretty(value) { return typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
-      function showToast(message, isError = false) {
-        const toast = byId('toast'); toast.textContent = message; toast.classList.toggle('error', isError); toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 3600);
+      function showToast(message, isError = false, title = isError ? 'No se pudo completar' : 'Operación completada') {
+        const toast = byId('toast'); setText('toast-title', title); setText('toast-message', message); byId('toast-icon-use').setAttribute('href', isError ? '#i-alert' : '#i-check'); toast.classList.toggle('error', isError); toast.setAttribute('role', isError ? 'alert' : 'status'); toast.setAttribute('aria-live', isError ? 'assertive' : 'polite'); toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 6000);
       }
       function writeOutput(value) { byId('output').textContent = pretty(value); }
       function clearOutput() { byId('output').textContent = ''; }
@@ -313,10 +324,14 @@
         return payload;
       }
       async function withBusy(button, operation) { if (button) button.disabled = true; try { return await operation(); } finally { if (button) button.disabled = false; } }
-      async function runPost(button, url) {
+      async function runPost(button, url, successTitle = 'Operación completada', successMessage = 'La operación terminó correctamente.') {
         writeOutput('Ejecutando…');
-        try { const payload = await withBusy(button, () => requestJson(url, {method:'POST', headers:{'x-csrf-token':csrf}})); writeOutput(payload); showToast('Operación completada'); }
-        catch (error) { writeOutput({ok:false,error:error.message}); showToast(error.message, true); }
+        try {
+          const payload = await withBusy(button, () => requestJson(url, {method:'POST', headers:{'x-csrf-token':csrf}})); writeOutput(payload);
+          const detail = url === '/api/admin/test' && payload && Number.isFinite(Number(payload.rootItems)) ? `Raíz accesible · ${payload.rootItems} elementos · cuota disponible.` : successMessage;
+          showToast(detail, false, successTitle);
+        }
+        catch (error) { writeOutput({ok:false,error:error.message}); showToast(error.message, true, 'La operación ha fallado'); }
         await Promise.all([loadStatus(), loadLoginStatus()]);
       }
       async function importSession(button) {

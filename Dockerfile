@@ -42,13 +42,13 @@ ENV APP_COMMIT=${GIT_COMMIT}
 LABEL org.opencontainers.image.revision=${GIT_COMMIT}
 
 COPY src /app/src
-COPY docker/entrypoint.sh /app/docker/entrypoint.sh
+COPY docker/entrypoint.sh docker/xdisplay.sh /app/docker/
 
 RUN pip install --no-cache-dir --no-deps .
 
 RUN useradd --create-home --uid 10001 o2gateway \
     && mkdir -p /config /cache /data \
-    && chmod +x /app/docker/entrypoint.sh \
+    && chmod +x /app/docker/entrypoint.sh /app/docker/xdisplay.sh \
     && chown -R o2gateway:o2gateway /config /cache /data /app /ms-playwright
 
 # Container starts as root so the entrypoint can align the runtime user with the

@@ -25,8 +25,10 @@ caching behind the scenes.
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Quick start (Docker)](#quick-start-docker)
+- [Admin panel](#admin-panel)
 - [Logging in to O2/Movistar (interactive VNC login)](#logging-in-to-o2movistar-interactive-vnc-login)
 - [Manual session import](#manual-session-import)
+- [Telegram session-expiry alerts](#telegram-session-expiry-alerts)
 - [Using the WebDAV share](#using-the-webdav-share)
 - [Simulated mode (no real cloud account)](#simulated-mode-no-real-cloud-account)
 - [Secrets](#secrets)
@@ -102,6 +104,36 @@ try the gateway without an account (see [Simulated mode](#simulated-mode-no-real
 
 Log in to the admin panel with `ADMIN_USERNAME` / the admin password, then
 authenticate to the selected cloud provider.
+
+## Admin panel
+
+The responsive administration panel provides a single view of the gateway's
+service, cloud session, quota, WebDAV URL, metadata cache, locks and most recent
+error. It also includes:
+
+- Assisted login and manual session import.
+- Connection tests, session removal and cache cleanup.
+- Telegram notification status and a test-message action.
+- Recent operation output and logs, with actions to refresh or clear the active
+  log file.
+- Gateway version and source commit in the login screen and footer, linked to
+  the GitHub repository and the exact revision respectively.
+
+The current redesign and immediate Telegram expiry alerts are available in the
+development image:
+
+```yaml
+services:
+  o2cloud-webdav:
+    image: garanda21/o2cloud_gateway_webdav:development
+```
+
+Update an existing development deployment with:
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
 
 ## Logging in to O2/Movistar (interactive VNC login)
 
@@ -197,6 +229,31 @@ Legacy imports containing only cookies and `validationKey` remain compatible. Th
 renew silently only when the gateway also has a persistent browser profile created by
 an assisted login; a standalone JSON import has no browser SSO session to reuse.
 
+## Telegram session-expiry alerts
+
+The gateway can notify one Telegram chat when O2/Movistar rejects the active
+session and automatic renewal cannot recover it. Notifications are deduplicated:
+the expiry event triggers delivery immediately and only one alert is sent for a
+given expired session. Failed deliveries are retried after
+`TELEGRAM_ALERT_RETRY_SECONDS`; no periodic alert polling is used.
+
+1. Create a bot with Telegram's `@BotFather` and copy its token.
+2. Start a conversation with the bot. A bot cannot initiate a private conversation
+   until the user has contacted it.
+3. Obtain the destination chat id and set these values in the gitignored `.env`:
+
+   ```env
+   TELEGRAM_BOT_TOKEN=123456:replace-with-your-token
+   TELEGRAM_CHAT_ID=123456789
+   ```
+
+4. Restart the container and click **Notificaciones Telegram** in the admin header
+   to send a test message.
+
+For a production deployment, prefer `TELEGRAM_BOT_TOKEN_FILE` with a read-only
+Docker secret instead of exposing the token as a container environment variable.
+The token and chat id are never returned by the admin API or written to logs.
+
 ## Using the WebDAV share
 
 Authenticate with `WEBDAV_USERNAME` and the WebDAV password.
@@ -248,6 +305,8 @@ in-code defaults; `docker-compose.yml` overrides several of them.
 | `APP_PORT` | `8080` | Port the app listens on inside the container (mapped to `8088` on the host by compose). |
 | `APP_BASE_URL` | `http://localhost:8080` | Public base URL of the gateway. Used to build absolute links, including the default noVNC URL. |
 | `APP_ENCRYPTION_KEY_FILE` | _(unset)_ | File containing the encryption key used to encrypt the stored O2/Movistar session. |
+| `APP_VERSION` | package version | Optional display-version override for the API and admin footer. |
+| `APP_COMMIT` | local Git commit when available | Optional source revision shown in the admin footer; injected from `GIT_COMMIT` by the Docker build. |
 | `PUID` | `10001` | Host user id the container runs as. Set to the owner of the mounted volumes so the app can write `/config`, `/cache`, `/data`. |
 | `PGID` | `10001` | Host group id the container runs as (see `PUID`). |
 
@@ -281,6 +340,15 @@ URL values:
 ```env
 CLOUD_PROVIDER=movistar
 ```
+
+### Telegram notifications
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | _(unset)_ | Bot token issued by `@BotFather`. Prefer the file setting in production. |
+| `TELEGRAM_BOT_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | Optional file containing the bot token. `TELEGRAM_BOT_TOKEN` takes precedence. |
+| `TELEGRAM_CHAT_ID` | _(unset)_ | Private chat, group, supergroup or channel id that receives alerts. |
+| `TELEGRAM_ALERT_RETRY_SECONDS` | `300` | Minimum delay between retry attempts after Telegram rejects or cannot receive an alert. |
 
 ### Interactive login / VNC
 
@@ -318,6 +386,7 @@ CLOUD_PROVIDER=movistar
 | `ADMIN_PASSWORD` | _(unset)_ | Inline admin password. Prefer `ADMIN_PASSWORD_FILE`. |
 | `ADMIN_PASSWORD_FILE` | `/run/secrets/admin_password` | File containing the admin password. |
 | `ADMIN_SESSION_SECRET_FILE` | `/run/secrets/app_encryption_key` | File whose contents sign admin session cookies. |
+| `ADMIN_STATUS_POLL_SECONDS` | `120` | Refresh interval for admin status while the browser tab is visible. Set to `0` to disable periodic refreshes. |
 
 ### Paths & storage
 
@@ -335,6 +404,7 @@ CLOUD_PROVIDER=movistar
 |----------|---------|-------------|
 | `CACHE_METADATA_TTL_SECONDS` | `20` | How long directory/file metadata is cached before refetching from O2/Movistar. |
 | `CACHE_NEGATIVE_TTL_SECONDS` | `5` | How long "not found" results are cached. |
+| `CACHE_QUOTA_TTL_SECONDS` | `60` | How long cloud quota results are reused across admin status requests. |
 | `CACHE_MAX_SIZE_MB` | `4096` | Max on-disk cache size in MB. |
 | `UPLOAD_MAX_FILE_MB` | `10240` | Max single-file upload size in MB. |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | Timeout for a single file download from O2/Movistar. |
@@ -372,6 +442,14 @@ pytest
 # Run the app with autoreload
 uvicorn o2gateway.main:create_app --factory --reload
 ```
+
+To include the source commit in the admin footer when building the container:
+
+```bash
+docker build --build-arg GIT_COMMIT="$(git rev-parse --short=8 HEAD)" -t o2cloud-webdav-gateway .
+```
+
+The package version is always shown; the commit is appended when available.
 
 The source targets Python **3.12+** and intentionally avoids newer syntax where
 practical, so local smoke tests can run on older macOS Python builds.

@@ -82,6 +82,7 @@ class O2CloudApiClient:
         # request instead of hammering O2 with calls that can only fail again.
         self._expired_key: Optional[str] = None
         self._expired_at: Optional[str] = None
+        self._session_expired_event = asyncio.Event()
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -91,12 +92,17 @@ class O2CloudApiClient:
 
     def _mark_session_expired(self) -> None:
         session = self.session_store.read()
-        self._expired_key = session.validation_key if session else ""
+        expired_key = session.validation_key if session else ""
+        if self._expired_key == expired_key and self._expired_at is not None:
+            return
+        self._expired_key = expired_key
         self._expired_at = datetime.now(timezone.utc).isoformat()
+        self._session_expired_event.set()
 
     def _clear_session_expiry(self) -> None:
         self._expired_key = None
         self._expired_at = None
+        self._session_expired_event.clear()
 
     def session_expired_at(self) -> Optional[str]:
         """ISO timestamp of when the current session was flagged expired, else None."""
@@ -109,6 +115,16 @@ class O2CloudApiClient:
             self._clear_session_expiry()
             return None
         return self._expired_at
+
+    async def wait_for_session_expiry(self) -> str:
+        """Wait until the active O2 session is newly marked as expired."""
+        while True:
+            await self._session_expired_event.wait()
+            expired_at = self.session_expired_at()
+            if expired_at is not None:
+                self._session_expired_event.clear()
+                return expired_at
+            self._session_expired_event.clear()
 
     async def validate_session(self, session: Optional[O2Session] = None) -> bool:
         supplied_session = session is not None

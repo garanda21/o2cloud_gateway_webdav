@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     novnc_port: int = 6080
     novnc_path: str = "/vnc.html?autoconnect=true&resize=scale&reconnect=true"
 
+    telegram_bot_token: Optional[str] = None
+    telegram_bot_token_file: Optional[str] = "/run/secrets/telegram_bot_token"
+    telegram_chat_id: Optional[str] = None
+    telegram_alert_retry_seconds: int = 300
+
+    app_version: Optional[str] = None
+    app_commit: Optional[str] = None
+
     webdav_enabled: bool = True
     webdav_path_base: str = "/dav"
     webdav_username: str = "o2dav"
@@ -55,6 +63,7 @@ class Settings(BaseSettings):
     admin_password: Optional[str] = None
     admin_password_file: Optional[str] = "/run/secrets/admin_password"
     admin_session_secret_file: Optional[str] = "/run/secrets/app_encryption_key"
+    admin_status_poll_seconds: int = 120
 
     config_dir: str = "/config"
     cache_dir: str = "/cache"
@@ -63,6 +72,7 @@ class Settings(BaseSettings):
 
     cache_metadata_ttl_seconds: int = 20
     cache_negative_ttl_seconds: int = 5
+    cache_quota_ttl_seconds: int = 60
     cache_max_size_mb: int = 4096
 
     upload_max_file_mb: int = 10240

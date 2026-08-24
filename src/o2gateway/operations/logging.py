@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 
 SENSITIVE_PATTERNS = [
+    re.compile(r"(https://api\.telegram\.org/bot)[^/\s]+", re.IGNORECASE),
     re.compile(r"(validationkey=)[^&\s]+", re.IGNORECASE),
     re.compile(r"((?:[?&])(?:k|token|downloadtoken|downloadToken|playbacktoken|playbackToken|access_token|accessToken)=)[^&\s]+", re.IGNORECASE),
     re.compile(r"(authorization:\s*)[^\n\r]+", re.IGNORECASE),
@@ -24,6 +25,8 @@ SENSITIVE_KEYS = {
     "cookie",
     "set-cookie",
     "password",
+    "telegram_bot_token",
+    "telegramBotToken",
     "validationkey",
     "validation_key",
     "validationKey",
@@ -108,3 +111,13 @@ def configure_logging(level: str, log_file: str) -> None:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setFormatter(JsonFormatter())
         root.addHandler(file_handler)
+
+
+def truncate_log_file(log_file: str) -> bool:
+    """Empty the active log file without replacing its inode."""
+    path = Path(log_file)
+    if not path.is_file():
+        return False
+    with path.open("r+", encoding="utf-8") as handle:
+        handle.truncate(0)
+    return True

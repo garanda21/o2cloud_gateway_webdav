@@ -17,7 +17,9 @@ from o2gateway.o2.login import O2LoginCoordinator, O2PlaywrightLoginService
 from o2gateway.o2.movistar import MovistarCloudApiClient
 from o2gateway.o2.session import O2SessionStore
 from o2gateway.o2.store import O2CloudFileStore
+from o2gateway.operations.build_info import BuildInfo, get_build_info
 from o2gateway.operations.logging import configure_logging
+from o2gateway.operations.telegram import TelegramNotifier
 from o2gateway.persistence.db import Database
 from o2gateway.persistence.metadata_cache import MetadataCache
 from o2gateway.security.auth import LocalAuth
@@ -34,8 +36,10 @@ class AppServices:
         self.db = Database(settings.sqlite_path)
         self.metadata_cache = MetadataCache(self.db, settings.cache_metadata_ttl_seconds, settings.cache_negative_ttl_seconds)
         self.auth = LocalAuth(settings)
+        self.build_info: BuildInfo = get_build_info(settings.app_version, settings.app_commit)
         self.o2_session_store = O2SessionStore(settings)
         self.o2_api = self._build_cloud_api()
+        self.telegram_notifier = TelegramNotifier(settings)
         self.locks = WebDavLockService(self.db)
         self._simulated_store: Optional[SimulatedCloudFileStore] = None
         self._o2_store: Optional[O2CloudFileStore] = None
@@ -54,6 +58,7 @@ class AppServices:
 
     async def close(self) -> None:
         await self.o2_api.close()
+        await self.telegram_notifier.close()
 
     async def keep_session_alive(self) -> None:
         interval = self.settings.o2_session_keepalive_seconds
@@ -62,6 +67,19 @@ class AppServices:
         while True:
             await asyncio.sleep(max(60, interval))
             await self.o2_login.keep_session_alive()
+
+    async def notify_session_expirations(self) -> None:
+        if (
+            not self.telegram_notifier.configured
+            or self.settings.cloud_provider.lower() not in {"o2", "movistar"}
+        ):
+            return
+        while True:
+            expired_at = await self.o2_api.wait_for_session_expiry()
+            while self.o2_api.session_expired_at() == expired_at:
+                if await self.telegram_notifier.notify_session_expired(expired_at):
+                    break
+                await asyncio.sleep(max(5, self.settings.telegram_alert_retry_seconds))
 
     def store(self) -> CloudFileStore:
         if self.settings.cloud_provider.lower() in {"o2", "movistar"}:
@@ -84,16 +102,19 @@ def create_app() -> FastAPI:
         await services.initialize()
         app.state.services = services
         keepalive_task = asyncio.create_task(services.keep_session_alive())
+        notification_task = asyncio.create_task(services.notify_session_expirations())
         logger.info("o2cloud gateway started")
         try:
             yield
         finally:
-            keepalive_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await keepalive_task
+            for task in (keepalive_task, notification_task):
+                task.cancel()
+            for task in (keepalive_task, notification_task):
+                with suppress(asyncio.CancelledError):
+                    await task
             await services.close()
 
-    app = FastAPI(title="O2Cloud WebDAV Gateway", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="O2Cloud WebDAV Gateway", version=services.build_info.version, lifespan=lifespan)
 
     @app.get("/health")
     async def health():
@@ -114,6 +135,8 @@ def create_app() -> FastAPI:
                 services.locks,
                 services.o2_login,
                 services.o2_login_coordinator,
+                services.telegram_notifier,
+                services.build_info,
             )
         )
     if settings.webdav_enabled:

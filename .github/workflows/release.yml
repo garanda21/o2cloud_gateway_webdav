@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: garanda21/o2cloud_gateway_webdav
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  release:
+    name: Test, publish image and create release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        id: release
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if [[ "${tag}" == "${version}" || ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+
+          commit="$(git rev-list -n 1 "${tag}")"
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${commit}" origin/main; then
+            echo "Release tag must point to a commit contained in main" >&2
+            exit 1
+          fi
+
+          if [[ "${version}" == *-* ]]; then
+            channel="development"
+            prerelease="true"
+          else
+            channel="latest"
+            prerelease="false"
+          fi
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,login]"
+
+      - name: Run tests and source checks
+        run: |
+          python -m pytest -q
+          python -m compileall -q src tests
+          git diff --check
+
+      - name: Validate Docker Hub credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "${DOCKERHUB_USERNAME}" || -z "${DOCKERHUB_TOKEN}" ]]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets are required" >&2
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Build and push linux/amd64 image
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}
+            ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.channel }}
+          build-args: |
+            APP_VERSION=${{ steps.release.outputs.version }}
+            GIT_COMMIT=${{ steps.release.outputs.commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        shell: bash
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub release ${RELEASE_TAG} already exists; leaving it unchanged"
+            exit 0
+          fi
+
+          options=(
+            "${RELEASE_TAG}"
+            --verify-tag
+            --title "O2Cloud WebDAV Gateway ${RELEASE_VERSION}"
+            --generate-notes
+          )
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "${options[@]}"

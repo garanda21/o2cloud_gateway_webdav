@@ -39,6 +39,13 @@ class WebDavLockService:
         )
         return WebDavLock(token=token, path=normalized, owner=owner, expires_at=expires_at)
 
+    async def release_path(self, path: str) -> None:
+        await self.cleanup()
+        await self.db.execute(
+            "delete from locks where path = ?",
+            (normalize_cloud_path(path),),
+        )
+
     async def release(self, token: str) -> bool:
         await self.cleanup()
         before = await self.db.fetchone("select token from locks where token = ?", (token,))
@@ -72,4 +79,3 @@ class WebDavLockService:
             (time.time(),),
         )
         return [WebDavLock(token=row["token"], path=row["path"], owner=row["owner"] or "", expires_at=row["expires_at"]) for row in rows]
-

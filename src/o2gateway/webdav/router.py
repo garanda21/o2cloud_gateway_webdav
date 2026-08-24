@@ -77,7 +77,9 @@ def create_webdav_router(
                 if _is_ignored_appledouble(settings, cloud_path):
                     return Response(status_code=204)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
-                return await _delete(store, cloud_path)
+                response = await _delete(store, cloud_path)
+                await locks.release_path(cloud_path)
+                return response
             if method == "MOVE":
                 _assert_writable(settings)
                 await locks.assert_can_write(cloud_path, request.headers.get("if"))
@@ -92,7 +94,7 @@ def create_webdav_router(
             if method == "UNLOCK":
                 return await _unlock(locks, request)
             if method == "PROPPATCH":
-                return Response(status_code=405)
+                return await _proppatch(request)
             return Response(status_code=405)
         except CloudNotFound as ex:
             logger.debug("webdav not found", extra={"operationId": operation_id, "path": str(ex)})
@@ -131,6 +133,14 @@ def _options() -> Response:
             "MS-Author-Via": "DAV",
         },
     )
+
+
+async def _proppatch(request: Request) -> Response:
+    try:
+        payload = xml.proppatch_multistatus(request.url.path, await request.body())
+    except xml.etree.XMLSyntaxError as ex:
+        raise ValueError("invalid PROPPATCH XML") from ex
+    return Response(payload, status_code=207, media_type="application/xml")
 
 
 async def _propfind(settings: Settings, store: CloudFileStore, cloud_path: str, request: Request) -> Response:

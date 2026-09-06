@@ -99,9 +99,14 @@ class O2PlaywrightLoginService:
         async with self._browser_lock:
             return await self._login(timeout_seconds, headless=self.settings.o2_playwright_headless, silent=False)
 
-    async def silent_reauthenticate(self, timeout_seconds: int = 45) -> bool:
+    async def silent_reauthenticate(self, timeout_seconds: Optional[int] = None) -> bool:
         if not self.has_persistent_profile():
+            logger.warning(
+                "silent browser reauthentication unavailable",
+                extra={"provider": self.settings.cloud_provider, "reason": "persistentProfileMissing"},
+            )
             return False
+        timeout_seconds = timeout_seconds or self.settings.o2_silent_reauth_timeout_seconds
         async with self._browser_lock:
             try:
                 await self._login(timeout_seconds, headless=True, silent=True)

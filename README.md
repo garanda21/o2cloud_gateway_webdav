@@ -178,9 +178,10 @@ the admin panel removes both the encrypted gateway session and this browser prof
 
 The gateway supports two renewal paths:
 
-1. If a `401` response contains a rotated OAuth bundle and `JSESSIONID`, the gateway
-   performs `POST /sapi/login/oauth`, stores the new `validationKey` and retries the
-   original operation once.
+1. If the captured session contains a renewable OAuth bundle, the gateway performs
+   `POST /sapi/login/oauth`, stores the new `validationKey` and retries the original
+   operation once. A rotated OAuth bundle or `JSESSIONID` returned with the rejection
+   is persisted before that attempt when available.
 2. Web logins normally expose only cookies and `validationKey`. In that case the
    gateway reopens the persisted Chromium profile headlessly, reuses its SSO session
    and captures a fresh provider session without showing noVNC.
@@ -188,6 +189,11 @@ The gateway supports two renewal paths:
 Sessions are also kept active preventively before the provider's idle window expires.
 The gateway makes a lightweight authenticated API request every 5 minutes by default.
 Set `O2_SESSION_KEEPALIVE_SECONDS=0` to disable this behavior.
+
+If both immediate renewal paths fail, the session is marked expired but recovery does
+not stop permanently. The gateway retries OAuth and the persisted Chromium profile
+with exponential backoff, starting at 5 minutes and capped at 1 hour by default. This
+allows recovery from temporary provider or browser failures without repeated requests.
 
 Concurrent WebDAV requests share a single renewal, avoiding parallel token rotation
 or multiple Chromium processes. Human intervention is required only when both the API
@@ -333,6 +339,9 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | `O2_SESSION_FILE` | `/config/secrets/o2-session.json` | Where the encrypted O2/Movistar session (cookies, validation key and renewable OAuth bundle) is stored. |
 | `O2_PLAYWRIGHT_HEADLESS` | `false` | Run the login Chromium headless. Must be `false` for the interactive VNC login to be visible. |
 | `O2_SESSION_KEEPALIVE_SECONDS` | `300` | Preventive authenticated API keepalive interval for O2/Movistar sessions. Set to `0` to disable. |
+| `O2_SESSION_RECOVERY_RETRY_SECONDS` | `300` | Initial retry delay after both automatic renewal paths fail. The delay increases exponentially. |
+| `O2_SESSION_RECOVERY_MAX_RETRY_SECONDS` | `3600` | Maximum delay between automatic recovery attempts. |
+| `O2_SILENT_REAUTH_TIMEOUT_SECONDS` | `120` | Maximum time allowed for a headless Chromium session recovery attempt. |
 | `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2/Movistar API HTTP requests. |
 
 For Movistar Cloud, setting the provider is enough. The gateway automatically

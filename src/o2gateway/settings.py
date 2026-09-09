@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     o2_session_recovery_retry_seconds: int = 300
     o2_session_recovery_max_retry_seconds: int = 3600
     o2_silent_reauth_timeout_seconds: int = 120
+    o2_proactive_reauth_seconds: int = 86400
+    o2_proactive_reauth_retry_seconds: int = 21600
     o2_login_novnc_url: Optional[str] = None
     novnc_port: int = 6080
     novnc_path: str = "/vnc.html?autoconnect=true&resize=scale&reconnect=true"

@@ -191,9 +191,11 @@ The gateway makes a lightweight authenticated API request every 5 minutes by def
 Set `O2_SESSION_KEEPALIVE_SECONDS=0` to disable this behavior.
 
 Because the provider can impose an absolute lifetime even while keepalive succeeds,
-the gateway also tries to mint a fresh browser session after 24 hours. This proactive
-attempt is transparent while the persisted browser SSO remains valid; a failed attempt
-does not invalidate the still-working API session and is retried after 6 hours.
+the gateway also tries to mint a fresh browser session after 6 hours. A successful
+renewal resets that 6-hour window. A transient failure does not invalidate the
+still-working API session and is retried after 1 hour. If the provider has already
+returned to its phone/OTP screen, headless browser attempts are suspended until the
+user completes a new interactive login.
 
 If both immediate renewal paths fail, the session is marked expired but recovery does
 not stop permanently. The gateway retries OAuth and the persisted Chromium profile
@@ -347,8 +349,8 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | `O2_SESSION_RECOVERY_RETRY_SECONDS` | `300` | Initial retry delay after both automatic renewal paths fail. The delay increases exponentially. |
 | `O2_SESSION_RECOVERY_MAX_RETRY_SECONDS` | `3600` | Maximum delay between automatic recovery attempts. |
 | `O2_SILENT_REAUTH_TIMEOUT_SECONDS` | `120` | Maximum time allowed for a headless Chromium session recovery attempt. |
-| `O2_PROACTIVE_REAUTH_SECONDS` | `86400` | Age at which a working API session is proactively renewed through the persisted browser profile. Set to `0` to disable. |
-| `O2_PROACTIVE_REAUTH_RETRY_SECONDS` | `21600` | Delay before retrying a failed proactive browser renewal while the current API session still works. |
+| `O2_PROACTIVE_REAUTH_SECONDS` | `21600` | Age at which a working API session is proactively renewed through the persisted browser profile. Set to `0` to disable. |
+| `O2_PROACTIVE_REAUTH_RETRY_SECONDS` | `3600` | Delay before retrying a transient proactive browser renewal failure while the current API session still works. |
 | `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2/Movistar API HTTP requests. |
 
 For Movistar Cloud, setting the provider is enough. The gateway automatically

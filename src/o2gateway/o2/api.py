@@ -83,6 +83,8 @@ class O2CloudApiClient:
         self._expired_key: Optional[str] = None
         self._expired_at: Optional[str] = None
         self._session_expired_event = asyncio.Event()
+        self._recovery_failures = 0
+        self._next_recovery_attempt = 0.0
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -103,6 +105,8 @@ class O2CloudApiClient:
         self._expired_key = None
         self._expired_at = None
         self._session_expired_event.clear()
+        self._recovery_failures = 0
+        self._next_recovery_attempt = 0.0
 
     def session_expired_at(self) -> Optional[str]:
         """ISO timestamp of when the current session was flagged expired, else None."""
@@ -187,13 +191,12 @@ class O2CloudApiClient:
         return CloudQuota(used_bytes=max(0, used), total_bytes=max(0, total), free_bytes=max(0, min(free, total)))
 
     async def keepalive(self) -> None:
-        session = self._require_session()
         response = await self._request(
             "GET",
             "media",
             {"action": "get-storage-space", "softdeleted": "true"},
             parse_json=False,
-            allow_refresh=session.can_refresh,
+            allow_refresh=True,
         )
         if response.status_code in AUTH_REJECTION_STATUSES:
             self._mark_session_expired()
@@ -271,7 +274,7 @@ class O2CloudApiClient:
             query["acceptasynchronous"] = "true"
         response: Optional[httpx.Response] = None
         for attempt in range(2):
-            session = self._require_session()
+            session = await self._require_recoverable_session()
             url = self._upload_url(query, session)
             headers = self._session_headers(session)
             headers.update({"Accept": "*/*", "X-Requested-With": "XMLHttpRequest", "Connection": "keep-alive"})
@@ -514,7 +517,7 @@ class O2CloudApiClient:
 
     async def _download_url(self, raw_url: str, file_name: str, byte_range: ByteRange) -> AsyncIterator[bytes]:
         for attempt in range(2):
-            session = self._require_session()
+            session = await self._require_recoverable_session()
             headers = self._session_headers(session)
             headers["Accept"] = "*/*"
             if byte_range is not None:
@@ -567,7 +570,8 @@ class O2CloudApiClient:
         allow_refresh: bool = True,
     ) -> httpx.Response:
         supplied_session = session is not None
-        session = session or self._require_session()
+        if session is None:
+            session = await self._require_recoverable_session(allow_recovery=allow_refresh)
         response = await self._send_api_request(method, resource, query, body, form, session)
         if response.status_code in AUTH_REJECTION_STATUSES:
             if allow_refresh and not supplied_session and await self._recover_session(response, session):
@@ -636,23 +640,87 @@ class O2CloudApiClient:
                 return False
             if current.validation_key != failed_session.validation_key or current.created_at != failed_session.created_at:
                 return True
-            if failed_session.can_refresh and rotated_bundle and current.oauth_bundle == failed_session.oauth_bundle:
+            if rotated_bundle and current.oauth_bundle == failed_session.oauth_bundle:
                 current.oauth_bundle = rotated_bundle
                 self._merge_response_cookies(response, current)
                 self.session_store.save(current)
-            if current.oauth_bundle and rotated_bundle:
-                return await self._oauth_login(current)
-            if self._silent_reauthenticator is None:
+            return await self._attempt_session_recovery(current, source="httpRejection")
+
+    async def recover_expired_session(self) -> bool:
+        """Retry recovery for a session already marked expired, with backoff."""
+        now = time.monotonic()
+        if now < self._next_recovery_attempt:
+            return False
+        async with self._refresh_lock:
+            now = time.monotonic()
+            if now < self._next_recovery_attempt:
                 return False
+            current = self.session_store.read()
+            if current is None or not current.is_authenticated:
+                return False
+            if self._expired_key is None or current.validation_key != self._expired_key:
+                self._clear_session_expiry()
+                return True
+            return await self._attempt_session_recovery(current, source="expiredSessionRetry")
+
+    async def _attempt_session_recovery(self, current: O2Session, *, source: str) -> bool:
+        logger.info(
+            "cloud session recovery started",
+            extra={
+                "provider": self.settings.cloud_provider,
+                "source": source,
+                "oauthAvailable": bool(current.oauth_bundle),
+                "browserRecoveryAvailable": self._silent_reauthenticator is not None,
+            },
+        )
+        if current.oauth_bundle:
+            try:
+                if await self._oauth_login(current):
+                    logger.info(
+                        "cloud session recovery completed",
+                        extra={"provider": self.settings.cloud_provider, "method": "oauth", "source": source},
+                    )
+                    return True
+            except Exception as ex:
+                logger.warning(
+                    "cloud oauth session renewal failed",
+                    extra={"provider": self.settings.cloud_provider, "errorType": type(ex).__name__},
+                )
+        if self._silent_reauthenticator is not None:
             try:
                 recovered = await self._silent_reauthenticator()
-            except Exception:
-                logger.exception("silent browser session recovery failed", extra={"provider": self.settings.cloud_provider})
-                return False
-            if not recovered:
-                return False
-            refreshed = self.session_store.read()
-            return bool(refreshed and refreshed.is_authenticated)
+            except Exception as ex:
+                logger.warning(
+                    "silent browser session recovery failed",
+                    extra={"provider": self.settings.cloud_provider, "errorType": type(ex).__name__},
+                )
+            else:
+                refreshed = self.session_store.read()
+                if recovered and refreshed and refreshed.is_authenticated:
+                    self._clear_session_expiry()
+                    logger.info(
+                        "cloud session recovery completed",
+                        extra={"provider": self.settings.cloud_provider, "method": "browser", "source": source},
+                    )
+                    return True
+        retry_seconds = self._schedule_recovery_retry()
+        logger.warning(
+            "cloud session recovery exhausted",
+            extra={
+                "provider": self.settings.cloud_provider,
+                "source": source,
+                "retryInSeconds": retry_seconds,
+            },
+        )
+        return False
+
+    def _schedule_recovery_retry(self) -> int:
+        self._recovery_failures += 1
+        base = max(60, self.settings.o2_session_recovery_retry_seconds)
+        maximum = max(base, self.settings.o2_session_recovery_max_retry_seconds)
+        retry_seconds = min(maximum, base * (2 ** min(self._recovery_failures - 1, 6)))
+        self._next_recovery_attempt = time.monotonic() + retry_seconds
+        return retry_seconds
 
     async def _oauth_login(self, session: O2Session) -> bool:
         query = {
@@ -693,6 +761,7 @@ class O2CloudApiClient:
             self._replace_cookie(session, O2Cookie("JSESSIONID", jsessionid, urlparse(self.settings.o2_api_base_url).hostname or "", "/"))
         if not session.validation_key or not session.oauth_bundle:
             return False
+        session.created_at = datetime.now(timezone.utc).isoformat()
         self.session_store.save(session)
         self._clear_session_expiry()
         logger.info("cloud oauth session renewed", extra={"provider": self.settings.cloud_provider})
@@ -740,6 +809,14 @@ class O2CloudApiClient:
             # Session changed (re-login/import) -> the previous flag is stale.
             self._clear_session_expiry()
         return session
+
+    async def _require_recoverable_session(self, *, allow_recovery: bool = True) -> O2Session:
+        try:
+            return self._require_session()
+        except CloudSessionExpired:
+            if not allow_recovery or not await self.recover_expired_session():
+                raise
+            return self._require_session()
 
     def _known_folder_candidates(self, folder_id: str) -> list[str]:
         return self._folder_candidates.get(folder_id, [folder_id])

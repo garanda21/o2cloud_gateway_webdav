@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from o2gateway.o2.api import O2CloudApiClient
 from o2gateway.o2.session import O2Cookie, O2Session, O2SessionStore, normalize_oauth_bundle
@@ -88,28 +88,86 @@ BOOTSTRAP_SCRIPT = """
 """
 
 
+class O2InteractiveLoginRequired(TimeoutError):
+    def __init__(self, page_location: str) -> None:
+        super().__init__("Provider login requires human interaction")
+        self.page_location = page_location
+
+
 class O2PlaywrightLoginService:
     def __init__(self, settings: Settings, session_store: O2SessionStore, api: O2CloudApiClient) -> None:
         self.settings = settings
         self.session_store = session_store
         self.api = api
         self._browser_lock = asyncio.Lock()
+        self._last_proactive_attempt = 0.0
+        self._browser_recovery_blocked_for_key = ""
 
     async def login(self, timeout_seconds: int = 300) -> O2Session:
         async with self._browser_lock:
-            return await self._login(timeout_seconds, headless=self.settings.o2_playwright_headless, silent=False)
+            session = await self._login(
+                timeout_seconds,
+                headless=self.settings.o2_playwright_headless,
+                silent=False,
+            )
+            self._browser_recovery_blocked_for_key = ""
+            return session
 
-    async def silent_reauthenticate(self, timeout_seconds: int = 45) -> bool:
-        if not self.has_persistent_profile():
+    async def silent_reauthenticate(self, timeout_seconds: Optional[int] = None, *, source: str = "reactive") -> bool:
+        current_session = self.session_store.read()
+        previous_validation_key = current_session.validation_key if current_session else ""
+        if previous_validation_key and self._browser_recovery_blocked_for_key == previous_validation_key:
+            logger.debug(
+                "silent browser reauthentication skipped",
+                extra={
+                    "provider": self.settings.cloud_provider,
+                    "reason": "humanInterventionRequired",
+                    "source": source,
+                },
+            )
             return False
+        if self._browser_recovery_blocked_for_key:
+            self._browser_recovery_blocked_for_key = ""
+        if not self.has_persistent_profile():
+            logger.warning(
+                "silent browser reauthentication unavailable",
+                extra={
+                    "provider": self.settings.cloud_provider,
+                    "reason": "persistentProfileMissing",
+                    "source": source,
+                },
+            )
+            return False
+        timeout_seconds = timeout_seconds or self.settings.o2_silent_reauth_timeout_seconds
         async with self._browser_lock:
             try:
-                await self._login(timeout_seconds, headless=True, silent=True)
+                await self._login(
+                    timeout_seconds,
+                    headless=True,
+                    silent=True,
+                    previous_validation_key=previous_validation_key,
+                )
+                self._browser_recovery_blocked_for_key = ""
                 return True
+            except O2InteractiveLoginRequired as ex:
+                self._browser_recovery_blocked_for_key = previous_validation_key
+                logger.warning(
+                    "silent browser reauthentication requires human intervention",
+                    extra={
+                        "provider": self.settings.cloud_provider,
+                        "pageLocation": ex.page_location,
+                        "source": source,
+                    },
+                )
+                return False
             except Exception as ex:
                 logger.warning(
                     "silent browser reauthentication unavailable",
-                    extra={"provider": self.settings.cloud_provider, "errorType": type(ex).__name__},
+                    extra={
+                        "provider": self.settings.cloud_provider,
+                        "errorType": type(ex).__name__,
+                        "source": source,
+                    },
                 )
                 return False
 
@@ -120,6 +178,7 @@ class O2PlaywrightLoginService:
         try:
             await self.api.keepalive()
             logger.info("api session keepalive completed", extra={"provider": self.settings.cloud_provider})
+            await self._proactive_reauthenticate_if_due(self.session_store.read() or session)
             return True
         except Exception as ex:
             logger.warning(
@@ -128,11 +187,40 @@ class O2PlaywrightLoginService:
             )
             return False
 
+    async def _proactive_reauthenticate_if_due(self, session: O2Session) -> None:
+        renew_after = self.settings.o2_proactive_reauth_seconds
+        if renew_after <= 0 or _session_age_seconds(session) < renew_after:
+            return
+        if self._browser_recovery_blocked_for_key == session.validation_key:
+            return
+        now = asyncio.get_running_loop().time()
+        retry_after = max(60, self.settings.o2_proactive_reauth_retry_seconds)
+        if self._last_proactive_attempt and now - self._last_proactive_attempt < retry_after:
+            return
+        self._last_proactive_attempt = now
+        logger.info(
+            "proactive browser session renewal started",
+            extra={
+                "provider": self.settings.cloud_provider,
+                "sessionAgeSeconds": int(_session_age_seconds(session)),
+            },
+        )
+        renewed = await self.silent_reauthenticate(source="proactive")
+        if renewed:
+            self._last_proactive_attempt = 0.0
+
     def has_persistent_profile(self) -> bool:
         profile = self._profile_dir()
         return profile.exists() and any(profile.iterdir())
 
-    async def _login(self, timeout_seconds: int, *, headless: bool, silent: bool) -> O2Session:
+    async def _login(
+        self,
+        timeout_seconds: int,
+        *,
+        headless: bool,
+        silent: bool,
+        previous_validation_key: str = "",
+    ) -> O2Session:
         try:
             from playwright.async_api import async_playwright
         except Exception as ex:
@@ -149,6 +237,7 @@ class O2PlaywrightLoginService:
         seen_urls: list[str] = []
         network_state = O2BrowserSessionState()
         capture_tasks: set[asyncio.Task] = set()
+        rejected_validation_keys = {previous_validation_key} if previous_validation_key else set()
 
         async with async_playwright() as p:
             context = None
@@ -163,39 +252,119 @@ class O2PlaywrightLoginService:
                 page.on("request", lambda request: self._on_request(request, seen_urls, network_state, capture_tasks))
                 page.on("response", lambda response: self._on_response(response, network_state, capture_tasks))
                 page.on("framenavigated", lambda frame: _remember(seen_urls, frame.url))
-                await page.goto(self.settings.o2_login_url)
+                target_url = (
+                    urljoin(self.settings.o2_login_url.rstrip("/") + "/", "login")
+                    if silent
+                    else self.settings.o2_login_url
+                )
+                await page.goto(target_url)
                 deadline = asyncio.get_event_loop().time() + timeout_seconds
+                login_flow_started = False
                 while asyncio.get_event_loop().time() < deadline:
                     await _drain_tasks(capture_tasks)
-                    session = await self._capture(context, page, seen_urls, network_state)
-                    if session and await self.api.validate_session(session):
-                        if not session.can_refresh and not silent:
-                            logger.warning(
-                                "interactive login completed without renewable oauth credentials",
-                                extra={"provider": self.settings.cloud_provider},
-                            )
-                        self.session_store.save(session)
-                        if silent:
-                            logger.info("browser session silently renewed", extra={"provider": self.settings.cloud_provider})
-                        return session
+                    if silent and _requires_human_intervention(page.url, self.settings.cloud_provider):
+                        raise O2InteractiveLoginRequired(_safe_page_location(page.url))
+                    session = await self._capture(
+                        context,
+                        page,
+                        seen_urls,
+                        network_state,
+                        excluded_validation_keys=rejected_validation_keys,
+                    )
+                    is_new_session = bool(session and session.validation_key != previous_validation_key)
+                    if session and (not silent or is_new_session):
+                        if await self.api.validate_session(session):
+                            if not session.can_refresh and not silent:
+                                logger.warning(
+                                    "interactive login completed without renewable oauth credentials",
+                                    extra={"provider": self.settings.cloud_provider},
+                                )
+                            self.session_store.save(session)
+                            if silent:
+                                logger.info(
+                                    "browser session silently renewed",
+                                    extra={"provider": self.settings.cloud_provider},
+                                )
+                            return session
+                        rejected_validation_keys.add(session.validation_key)
+                    if silent and not login_flow_started and await self._start_login_flow(page):
+                        login_flow_started = True
                     await asyncio.sleep(2)
+                location = _safe_page_location(page.url)
+                if silent and _requires_human_intervention(page.url, self.settings.cloud_provider):
+                    raise O2InteractiveLoginRequired(location)
+                logger.warning(
+                    "browser session renewal timed out",
+                    extra={"provider": self.settings.cloud_provider, "pageLocation": location},
+                )
                 raise TimeoutError("O2 login timed out before a valid session was detected")
             finally:
                 await _drain_tasks(capture_tasks)
                 if context is not None:
                     await context.close()
 
-    async def _capture(self, context, page, seen_urls: list[str], network_state: "O2BrowserSessionState") -> Optional[O2Session]:
+    async def _start_login_flow(self, page) -> bool:
+        current = urlparse(page.url)
+        provider = urlparse(self.settings.o2_login_url)
+        if current.hostname != provider.hostname or current.path.rstrip("/") != "/login":
+            return False
+        try:
+            is_movistar = self.settings.cloud_provider.lower() == "movistar"
+            action_text = "Entrar" if is_movistar else "Acceder"
+            candidates = page.locator("a, button").filter(
+                has_text=re.compile(rf"^\s*{re.escape(action_text)}\s*$", re.I)
+            )
+            for index in range(await candidates.count()):
+                candidate = candidates.nth(index)
+                if await candidate.is_visible() and await candidate.is_enabled():
+                    try:
+                        await candidate.click(timeout=3_000)
+                    except Exception:
+                        if not is_movistar:
+                            raise
+                        # Movistar can place its cookie preferences dialog over
+                        # the entry action. Trigger the same DOM action without
+                        # accepting optional analytics cookies on the user's
+                        # behalf.
+                        await candidate.evaluate("element => element.click()")
+                    logger.info(
+                        "silent browser login flow started",
+                        extra={
+                            "provider": self.settings.cloud_provider,
+                            "action": action_text,
+                        },
+                    )
+                    return True
+        except Exception as ex:
+            logger.debug(
+                "silent browser login flow could not be started",
+                extra={"provider": self.settings.cloud_provider, "errorType": type(ex).__name__},
+            )
+        return False
+
+    async def _capture(
+        self,
+        context,
+        page,
+        seen_urls: list[str],
+        network_state: "O2BrowserSessionState",
+        *,
+        excluded_validation_keys: set[str],
+    ) -> Optional[O2Session]:
         try:
             state = await page.evaluate(CAPTURE_SCRIPT)
         except Exception:
             state = {}
         serialized = json.dumps({"state": state, "seenUrls": seen_urls}, ensure_ascii=False)
-        validation_key = (
-            network_state.validation_key
-            or (state or {}).get("validationKey")
-            or _extract_validation_key(serialized)
-            or _extract_validation_key("\n".join(seen_urls))
+        candidates = [
+            network_state.validation_key,
+            (state or {}).get("validationKey"),
+            _extract_validation_key(serialized, excluded_validation_keys),
+            _extract_validation_key("\n".join(seen_urls), excluded_validation_keys),
+        ]
+        validation_key = next(
+            (candidate for candidate in candidates if candidate and candidate not in excluded_validation_keys),
+            None,
         )
         if not validation_key:
             return None
@@ -218,6 +387,7 @@ class O2PlaywrightLoginService:
         )
 
     def clear_session_cache(self) -> None:
+        self._browser_recovery_blocked_for_key = ""
         shutil.rmtree(self._profile_dir(), ignore_errors=True)
 
     def _profile_dir(self) -> Path:
@@ -234,9 +404,38 @@ class O2PlaywrightLoginService:
             _schedule(_capture_oauth_response(response, network_state), tasks)
 
 
-def _extract_validation_key(text: str) -> Optional[str]:
-    match = VALIDATION_RE.search(text or "")
-    return match.group(1) if match else None
+def _extract_validation_key(text: str, excluded: set[str]) -> Optional[str]:
+    matches = VALIDATION_RE.findall(text or "")
+    return next((candidate for candidate in reversed(matches) if candidate not in excluded), None)
+
+
+def _session_age_seconds(session: O2Session) -> float:
+    try:
+        created_at = datetime.fromisoformat(session.created_at.replace("Z", "+00:00"))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds())
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def _safe_page_location(raw_url: str) -> str:
+    try:
+        parsed = urlparse(raw_url)
+        return f"{parsed.hostname or 'unknown'}{parsed.path or '/'}"
+    except Exception:
+        return "unknown"
+
+
+def _requires_human_intervention(raw_url: str, cloud_provider: str) -> bool:
+    try:
+        parsed = urlparse(raw_url)
+        path = parsed.path.rstrip("/").lower()
+        if cloud_provider.lower() == "movistar":
+            return parsed.hostname == "t3.movistar.es" and path.startswith("/segu-loginapp")
+        return path == "/acceso"
+    except Exception:
+        return False
 
 
 def _remember(seen_urls: list[str], url: str) -> None:

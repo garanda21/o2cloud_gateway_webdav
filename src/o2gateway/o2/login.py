@@ -262,6 +262,8 @@ class O2PlaywrightLoginService:
                 login_flow_started = False
                 while asyncio.get_event_loop().time() < deadline:
                     await _drain_tasks(capture_tasks)
+                    if silent and _requires_human_intervention(page.url, self.settings.cloud_provider):
+                        raise O2InteractiveLoginRequired(_safe_page_location(page.url))
                     session = await self._capture(
                         context,
                         page,
@@ -289,7 +291,7 @@ class O2PlaywrightLoginService:
                         login_flow_started = True
                     await asyncio.sleep(2)
                 location = _safe_page_location(page.url)
-                if silent and _requires_human_intervention(page.url):
+                if silent and _requires_human_intervention(page.url, self.settings.cloud_provider):
                     raise O2InteractiveLoginRequired(location)
                 logger.warning(
                     "browser session renewal timed out",
@@ -307,14 +309,30 @@ class O2PlaywrightLoginService:
         if current.hostname != provider.hostname or current.path.rstrip("/") != "/login":
             return False
         try:
-            candidates = page.locator("a, button").filter(has_text=re.compile(r"^\s*Acceder\s*$", re.I))
+            is_movistar = self.settings.cloud_provider.lower() == "movistar"
+            action_text = "Entrar" if is_movistar else "Acceder"
+            candidates = page.locator("a, button").filter(
+                has_text=re.compile(rf"^\s*{re.escape(action_text)}\s*$", re.I)
+            )
             for index in range(await candidates.count()):
                 candidate = candidates.nth(index)
                 if await candidate.is_visible() and await candidate.is_enabled():
-                    await candidate.click()
+                    try:
+                        await candidate.click(timeout=3_000)
+                    except Exception:
+                        if not is_movistar:
+                            raise
+                        # Movistar can place its cookie preferences dialog over
+                        # the entry action. Trigger the same DOM action without
+                        # accepting optional analytics cookies on the user's
+                        # behalf.
+                        await candidate.evaluate("element => element.click()")
                     logger.info(
                         "silent browser login flow started",
-                        extra={"provider": self.settings.cloud_provider},
+                        extra={
+                            "provider": self.settings.cloud_provider,
+                            "action": action_text,
+                        },
                     )
                     return True
         except Exception as ex:
@@ -409,9 +427,13 @@ def _safe_page_location(raw_url: str) -> str:
         return "unknown"
 
 
-def _requires_human_intervention(raw_url: str) -> bool:
+def _requires_human_intervention(raw_url: str, cloud_provider: str) -> bool:
     try:
-        return urlparse(raw_url).path.rstrip("/").lower() == "/acceso"
+        parsed = urlparse(raw_url)
+        path = parsed.path.rstrip("/").lower()
+        if cloud_provider.lower() == "movistar":
+            return parsed.hostname == "t3.movistar.es" and path.startswith("/segu-loginapp")
+        return path == "/acceso"
     except Exception:
         return False
 

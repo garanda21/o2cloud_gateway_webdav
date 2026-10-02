@@ -17,3 +17,8 @@ secrets/*
 !secrets/.gitkeep
 AGENTS.md
 .env
+
+# Local rclone remote for testing against a real O2 account: contains the
+# WebDAV password in obscured form. Never commit it.
+rclone.conf
+.venv/

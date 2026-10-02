@@ -3,6 +3,7 @@ set -eu
 
 ENTRYPOINT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$ENTRYPOINT_DIR/xdisplay.sh"
+. "$ENTRYPOINT_DIR/home.sh"
 
 export DISPLAY="${DISPLAY:-:99}"
 X_DISPLAY_NUMBER=$(x_display_number "$DISPLAY")
@@ -30,7 +31,10 @@ if [ "$(id -u)" = "0" ]; then
   exec gosu "$PUID:$PGID" "$0" "$@"
 fi
 
-export HOME="${HOME:-/home/o2gateway}"
+# Chromium needs a writable HOME (see docker/home.sh for the full reason).
+# /config is a persistent volume, so the browser profile survives restarts.
+ensure_writable_home /home/o2gateway /config/home /tmp/o2gateway-home >/dev/null || true
+
 XVFB_SCREEN="${XVFB_SCREEN:-1280x900x24}"
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_HOST="${NOVNC_HOST:-0.0.0.0}"

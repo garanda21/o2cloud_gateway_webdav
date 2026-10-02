@@ -398,6 +398,8 @@ class O2PlaywrightLoginService:
         _remember(seen_urls, request.url)
         if _is_oauth_login_url(request.url):
             _schedule(_capture_oauth_request(request, network_state), tasks)
+        elif _is_api_url(request.url):
+            _schedule(_capture_api_request(request, network_state), tasks)
 
     def _on_response(self, response, network_state: "O2BrowserSessionState", tasks: set[asyncio.Task]) -> None:
         if _is_oauth_login_url(response.url):
@@ -465,6 +467,20 @@ async def _capture_oauth_request(request, state: O2BrowserSessionState) -> None:
     state.device_name = headers.get("x-devicename") or state.device_name
 
 
+async def _capture_api_request(request, state: O2BrowserSessionState) -> None:
+    # The provider binds a web session to the browser's device id: replaying the
+    # cookies and validationKey under any other X-deviceid is rejected with 401.
+    # Web logins rarely go through /login/oauth, so take it from regular API calls.
+    if state.device_id:
+        return
+    try:
+        headers = await request.all_headers()
+    except Exception:
+        return
+    state.device_id = headers.get("x-deviceid") or state.device_id
+    state.device_name = headers.get("x-devicename") or state.device_name
+
+
 async def _capture_oauth_response(response, state: O2BrowserSessionState) -> None:
     try:
         headers = await response.all_headers()
@@ -488,6 +504,13 @@ async def _capture_oauth_response(response, state: O2BrowserSessionState) -> Non
 def _is_oauth_login_url(raw_url: str) -> bool:
     try:
         return urlparse(raw_url).path.rstrip("/").endswith("/login/oauth")
+    except Exception:
+        return False
+
+
+def _is_api_url(raw_url: str) -> bool:
+    try:
+        return "/sapi/" in urlparse(raw_url).path
     except Exception:
         return False
 

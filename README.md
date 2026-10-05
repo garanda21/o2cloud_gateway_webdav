@@ -107,6 +107,36 @@ try the gateway without an account (see [Simulated mode](#simulated-mode-no-real
 Log in to the admin panel with `ADMIN_USERNAME` / the admin password, then
 authenticate to the selected cloud provider.
 
+### Rootless Podman
+
+The image also runs under rootless Podman with `--userns=keep-id`: the entrypoint
+falls back to a writable `HOME` under `/config`, so the login browser starts.
+
+Use `--network host`. With rootless Podman's default network (`pasta`), uploads to
+the provider stall: the host-side connection sits idle with an open window, waiting
+for data from the container. Files of about 1 MB or more then fail with
+`408 Request Timeout` from the provider, and smaller ones crawl at 12–25 kB/s.
+With `--network host`, measured on Fedora 44 with Podman 5, the same gateway
+uploaded 100 MB in 7.5 s and 500 MB in 19.8 s.
+
+With the host network there is no port mapping, so bind the services to loopback
+yourself:
+
+```bash
+podman run -d --name o2cloud-webdav --userns=keep-id --network host \
+  -e APP_HOST=127.0.0.1 -e APP_PORT=8088 -e APP_BASE_URL=http://localhost:8088 \
+  -e NOVNC_HOST=127.0.0.1 -e NOVNC_PORT=6080 \
+  -e CLOUD_PROVIDER=o2 -e APP_ENCRYPTION_KEY_FILE=/run/secrets/app_encryption_key \
+  -v ./config:/config:Z -v ./cache:/cache:Z -v ./data:/data:Z \
+  -v ./secrets/webdav_password.txt:/run/secrets/webdav_password:ro,Z \
+  -v ./secrets/admin_password.txt:/run/secrets/admin_password:ro,Z \
+  -v ./secrets/app_encryption_key.txt:/run/secrets/app_encryption_key:ro,Z \
+  garanda21/o2cloud_gateway_webdav:latest
+```
+
+Use `APP_HOST=0.0.0.0` only if other machines must reach WebDAV. The internal
+x11vnc port is bound to loopback by the entrypoint and never needs to be exposed.
+
 ## Admin panel
 
 The responsive administration panel provides a single view of the gateway's

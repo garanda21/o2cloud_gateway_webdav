@@ -398,8 +398,13 @@ class O2PlaywrightLoginService:
         _remember(seen_urls, request.url)
         if _is_oauth_login_url(request.url):
             _schedule(_capture_oauth_request(request, network_state), tasks)
-        elif _is_api_url(request.url):
+        elif self._captures_web_device_id() and _is_api_url(request.url, self.settings.o2_api_base_url):
             _schedule(_capture_api_request(request, network_state), tasks)
+
+    def _captures_web_device_id(self) -> bool:
+        # Verified only against O2 so far; Movistar keeps its previous behavior
+        # until the same requirement is confirmed there.
+        return self.settings.cloud_provider.lower() == "o2"
 
     def _on_response(self, response, network_state: "O2BrowserSessionState", tasks: set[asyncio.Task]) -> None:
         if _is_oauth_login_url(response.url):
@@ -508,9 +513,18 @@ def _is_oauth_login_url(raw_url: str) -> bool:
         return False
 
 
-def _is_api_url(raw_url: str) -> bool:
+def _is_api_url(raw_url: str, api_base_url: str) -> bool:
+    """True only for requests to the configured provider API origin and path."""
     try:
-        return "/sapi/" in urlparse(raw_url).path
+        request = urlparse(raw_url)
+        api = urlparse(api_base_url)
+        return (
+            bool(api.hostname)
+            and request.scheme == api.scheme
+            and request.hostname == api.hostname
+            and request.port == api.port
+            and request.path.startswith(api.path.rstrip("/") + "/")
+        )
     except Exception:
         return False
 

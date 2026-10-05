@@ -2,19 +2,37 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 import aiosqlite
 
 
+# Concurrent WebDAV writes (e.g. rclone/restic with several transfers) each open
+# their own connection. With the default rollback journal and sqlite3's 5 s busy
+# timeout, a slow disk turns that into "database is locked", which surfaced as a
+# 502 after the file had already been stored in the cloud.
+BUSY_TIMEOUT_SECONDS = 30.0
+
+
 class Database:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, busy_timeout: float = BUSY_TIMEOUT_SECONDS) -> None:
         self.path = path
+        self.busy_timeout = busy_timeout
+
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        async with aiosqlite.connect(self.path, timeout=self.busy_timeout) as db:
+            # Per connection; NORMAL is the recommended durability level with WAL.
+            await db.execute("pragma synchronous=normal")
+            yield db
 
     async def initialize(self) -> None:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
+            # Persistent in the database file: readers stop blocking the writer.
+            await db.execute("pragma journal_mode=wal")
             await db.executescript(
                 """
                 create table if not exists locks (
@@ -46,18 +64,18 @@ class Database:
             await db.commit()
 
     async def execute(self, query: str, args: tuple[Any, ...] = ()) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(query, args)
             await db.commit()
 
     async def fetchone(self, query: str, args: tuple[Any, ...] = ()) -> Optional[aiosqlite.Row]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, args)
             return await cursor.fetchone()
 
     async def fetchall(self, query: str, args: tuple[Any, ...] = ()) -> list[aiosqlite.Row]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, args)
             rows = await cursor.fetchall()

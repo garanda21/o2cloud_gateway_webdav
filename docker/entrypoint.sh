@@ -86,7 +86,9 @@ if command -v fluxbox >/dev/null 2>&1; then
   start_bg fluxbox >/tmp/fluxbox.log 2>&1
 fi
 
-start_bg x11vnc -display "$DISPLAY" -forever -shared -rfbport "$VNC_PORT" -nopw -quiet >/tmp/x11vnc.log 2>&1
+# websockify is the only client and connects over loopback; never expose the raw,
+# passwordless RFB port to the network (it would be reachable with --network host).
+start_bg x11vnc -display "$DISPLAY" -localhost -forever -shared -rfbport "$VNC_PORT" -nopw -quiet >/tmp/x11vnc.log 2>&1
 start_bg websockify --web=/usr/share/novnc "$NOVNC_HOST:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/tmp/novnc.log 2>&1
 
 "$@" &

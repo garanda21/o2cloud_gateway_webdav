@@ -379,7 +379,7 @@ CLOUD_PROVIDER=movistar
 | `NOVNC_PATH` | `/vnc.html?autoconnect=true&resize=scale&reconnect=true` | Path + query appended when building the noVNC URL. |
 | `DISPLAY` | `:99` | Virtual X display Chromium and VNC use (set in Dockerfile/compose). |
 | `XVFB_SCREEN` | `1280x900x24` | Virtual framebuffer geometry for the login browser. |
-| `VNC_PORT` | `5900` | Internal RFB port `x11vnc` listens on (proxied by websockify). |
+| `VNC_PORT` | `5900` | Internal RFB port `x11vnc` listens on, bound to `127.0.0.1` only (proxied by websockify). |
 | `NOVNC_HOST` | `0.0.0.0` | Interface websockify binds the noVNC web server to. |
 
 ### WebDAV

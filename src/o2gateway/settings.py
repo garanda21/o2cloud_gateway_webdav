@@ -108,6 +108,8 @@ class Settings(BaseSettings):
         normalized = {str(key).lower(): key for key in values}
         provider_key = normalized.get("cloud_provider")
         provider = str(values.get(provider_key, "")).lower() if provider_key else ""
+        if provider == "o2" and "o2_proactive_reauth_seconds" not in normalized:
+            values["o2_proactive_reauth_seconds"] = 0
         if provider != "movistar":
             return values
         defaults = {

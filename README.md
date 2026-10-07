@@ -190,12 +190,17 @@ Sessions are also kept active preventively before the provider's idle window exp
 The gateway makes a lightweight authenticated API request every 5 minutes by default.
 Set `O2_SESSION_KEEPALIVE_SECONDS=0` to disable this behavior.
 
-Because the provider can impose an absolute lifetime even while keepalive succeeds,
-the gateway also tries to mint a fresh browser session after 6 hours. A successful
-renewal resets that 6-hour window. A transient failure does not invalidate the
-still-working API session and is retried after 1 hour. If the provider has already
-returned to its phone/OTP screen, headless browser attempts are suspended until the
-user completes a new interactive login.
+Proactive browser renewal is disabled by default for O2. In a real-account test,
+the API session was rejected shortly after the six-hour browser renewal attempt;
+with proactive renewal disabled, another session remained usable for over 104 hours
+and accepted WebDAV backup uploads. The exact cause of invalidation is still under
+investigation. API keepalive and recovery after an authentication rejection remain
+enabled. Explicitly configured `O2_PROACTIVE_REAUTH_SECONDS` values are respected.
+
+Movistar retains its six-hour proactive browser renewal default. A successful
+renewal resets that window; failed attempts are retried after one hour. If the
+provider requires phone/OTP input, headless attempts are suspended until a new
+interactive login.
 
 If both immediate renewal paths fail, the session is marked expired but recovery does
 not stop permanently. The gateway retries OAuth and the persisted Chromium profile
@@ -349,7 +354,7 @@ prepare the X11 socket, then drops privileges via `gosu`. No `user:` override or
 | `O2_SESSION_RECOVERY_RETRY_SECONDS` | `300` | Initial retry delay after both automatic renewal paths fail. The delay increases exponentially. |
 | `O2_SESSION_RECOVERY_MAX_RETRY_SECONDS` | `3600` | Maximum delay between automatic recovery attempts. |
 | `O2_SILENT_REAUTH_TIMEOUT_SECONDS` | `120` | Maximum time allowed for a headless Chromium session recovery attempt. |
-| `O2_PROACTIVE_REAUTH_SECONDS` | `21600` | Age at which a working API session is proactively renewed through the persisted browser profile. Set to `0` to disable. |
+| `O2_PROACTIVE_REAUTH_SECONDS` | O2: `0`; Movistar: `21600` | Age at which a working API session is proactively renewed through the persisted browser profile. `0` disables proactive renewal. Explicit values override the provider default. |
 | `O2_PROACTIVE_REAUTH_RETRY_SECONDS` | `3600` | Delay before retrying a transient proactive browser renewal failure while the current API session still works. |
 | `O2_HTTP_TIMEOUT_SECONDS` | `120` | Timeout for O2/Movistar API HTTP requests. |
 

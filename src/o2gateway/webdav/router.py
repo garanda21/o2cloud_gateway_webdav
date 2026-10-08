@@ -12,6 +12,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from o2gateway.cloud.base import CloudFileStore, CloudItemMetadata, normalize_cloud_path, parent_path
 from o2gateway.operations.errors import (
+    CloudAlreadyExists,
     CloudConflict,
     CloudError,
     CloudForbidden,
@@ -246,7 +247,11 @@ async def _mkcol(store: CloudFileStore, cloud_path: str) -> Response:
     if await store.get_metadata(cloud_path) is not None:
         return Response(status_code=405)
     await _require_parent_collection(store, cloud_path)
-    await store.create_folder(cloud_path)
+    try:
+        await store.create_folder(cloud_path)
+    except CloudAlreadyExists:
+        # Lost a race with a concurrent MKCOL for the same path (RFC 4918 9.3.1).
+        return Response(status_code=405)
     return Response(status_code=201)
 
 

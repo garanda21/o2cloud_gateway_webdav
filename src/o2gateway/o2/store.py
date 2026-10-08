@@ -49,6 +49,7 @@ class O2CloudFileStore:
         self._overlay: dict[str, OverlayEntry] = {}
         self._hidden_remote_ids: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()
+        self._folder_locks: dict[str, asyncio.Lock] = {}
         self._spool_dir().mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ lectura
@@ -138,12 +139,25 @@ class O2CloudFileStore:
 
     async def create_folder(self, path: str) -> CloudItemMetadata:
         normalized = normalize_cloud_path(path)
+        # The provider never rejects a duplicate folder name: it creates "name (1)".
+        # Two concurrent MKCOLs for the same path (rclone/restic with several
+        # transfers) both passed the router's existence check, the second one got
+        # the "(1)" folder and later uploads to that path landed in it, invisible
+        # under the real name. Serialize per path and re-check inside the lock.
+        lock = self._folder_locks.setdefault(normalized, asyncio.Lock())
+        async with lock:
+            return await self._create_folder_locked(normalized)
+
+    async def _create_folder_locked(self, normalized: str) -> CloudItemMetadata:
         entry = self._entry(normalized)
         if entry is not None and entry.state == PENDING_DELETE:
             self._drop_entry(normalized)
         parent = await self._item_for_path(parent_path(normalized))
         if parent is None or not parent.is_folder:
             raise CloudNotFound(parent_path(normalized))
+        existing = self._path_to_item.get(normalized)
+        if existing is not None and existing.is_folder:
+            raise CloudAlreadyExists(normalized)
         created = await self.api.create_folder(parent.id, basename(normalized))
         self._path_to_item[normalized] = created
         await self.cache.invalidate(parent_path(normalized), normalized)

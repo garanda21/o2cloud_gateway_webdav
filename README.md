@@ -95,6 +95,10 @@ By default `docker-compose.yml` pulls the prebuilt image
 from Docker Hub — no local build needed. To build from source instead, replace the
 `image:` line with `build: .` and run `docker compose up --build`.
 
+Release images support `linux/amd64` and `linux/arm64` (including Raspberry Pi
+running a 64-bit OS and ARM-based cloud servers). Docker selects the native image
+automatically; no runtime emulation or `platform:` override is needed.
+
 Then open:
 
 - Admin panel: <http://localhost:8088/admin>
@@ -529,7 +533,7 @@ practical, so local smoke tests can run on older macOS Python builds.
 GitHub Releases and Docker Hub images are published together by
 `.github/workflows/release.yml`. The workflow runs only for version tags matching
 `v*.*.*`, verifies that the tagged commit belongs to `main`, runs the complete test
-suite, builds the image for `linux/amd64`, pushes it to Docker Hub and finally creates
+suite, builds the image for `linux/amd64` and `linux/arm64`, pushes it to Docker Hub and finally creates
 a GitHub Release with automatically generated notes.
 
 Configure these GitHub Actions repository secrets before publishing the first release:

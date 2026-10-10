@@ -107,6 +107,47 @@ try the gateway without an account (see [Simulated mode](#simulated-mode-no-real
 Log in to the admin panel with `ADMIN_USERNAME` / the admin password, then
 authenticate to the selected cloud provider.
 
+### Rootless Podman
+
+The image also runs under rootless Podman with `--userns=keep-id`: the entrypoint
+falls back to a writable `HOME` under `/config`, so the login browser starts.
+
+#### Workaround: slow or stalled uploads with `pasta`
+
+Rootless Podman uses the `pasta` network by default. On Fedora 44 with Podman 5,
+uploads to the provider stalled with that network: the host-side connection sat idle
+with an open window, waiting for data from the container. Files of about 1 MB or
+more failed with `408 Request Timeout` from the provider, and smaller ones crawled
+at 12–25 kB/s. Other rootless setups may not show this.
+
+If you see those symptoms, run the container with `--network host`. In the same
+environment, with the same gateway, that uploaded 100 MB in 7.5 s and 500 MB in 19.8 s.
+
+With the host network there is no port mapping, so bind the services to loopback
+yourself. **This example requires an image that includes the x11vnc loopback fix
+(#18).** Without it, x11vnc listens on every interface with no password, and the host
+network exposes it to your LAN. At the time of writing no published image contains
+#18 yet, so `latest` does not guarantee it: use a release that includes #18, or build
+from a commit that contains it:
+
+```bash
+podman build -t o2cloud-gateway:local .
+
+podman run -d --name o2cloud-webdav --userns=keep-id --network host \
+  -e APP_HOST=127.0.0.1 -e APP_PORT=8088 -e APP_BASE_URL=http://localhost:8088 \
+  -e NOVNC_HOST=127.0.0.1 -e NOVNC_PORT=6080 \
+  -e CLOUD_PROVIDER=o2 -e APP_ENCRYPTION_KEY_FILE=/run/secrets/app_encryption_key \
+  -v ./config:/config:Z -v ./cache:/cache:Z -v ./data:/data:Z \
+  -v ./secrets/webdav_password.txt:/run/secrets/webdav_password:ro,Z \
+  -v ./secrets/admin_password.txt:/run/secrets/admin_password:ro,Z \
+  -v ./secrets/app_encryption_key.txt:/run/secrets/app_encryption_key:ro,Z \
+  o2cloud-gateway:local
+```
+
+Use `APP_HOST=0.0.0.0` only if other machines must reach WebDAV. With #18, the
+internal x11vnc port is bound to loopback by the entrypoint and never needs to be
+exposed.
+
 ## Admin panel
 
 The responsive administration panel provides a single view of the gateway's

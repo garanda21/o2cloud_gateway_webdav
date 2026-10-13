@@ -11,6 +11,10 @@ services:
       # Host port for the noVNC login screen. Change the left side if 6080 is
       # already taken (e.g. Synology DSM), and update O2_LOGIN_NOVNC_URL to match.
       - "6080:6080"
+    # Pass the settings from .env (created from .env.example) into the container.
+    # Without this, compose only uses .env to substitute ${...} below, and the
+    # app never sees the rest of it. Values under `environment:` take precedence.
+    env_file: .env
     environment:
       # Run as the host user/group that owns the mounted volumes. The entrypoint
       # applies these and drops privileges; no `user:` override needed.

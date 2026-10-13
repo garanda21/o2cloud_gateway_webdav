@@ -359,7 +359,9 @@ of version control (`secrets/` should be git-ignored).
 
 ## Environment variables
 
-All settings come from environment variables (or `.env`). Defaults below are the
+All settings come from environment variables. With the shipped `docker-compose.yml`,
+every variable in `.env` is passed to the container (`env_file: .env`), and the values
+under its `environment:` section take precedence over `.env`. Defaults below are the
 in-code defaults; `docker-compose.yml` overrides several of them.
 
 ### Application

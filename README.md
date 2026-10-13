@@ -475,7 +475,7 @@ CLOUD_PROVIDER=movistar
 | `CACHE_METADATA_TTL_SECONDS` | `20` | How long directory/file metadata is cached before refetching from O2/Movistar. |
 | `CACHE_NEGATIVE_TTL_SECONDS` | `5` | How long "not found" results are cached. |
 | `CACHE_QUOTA_TTL_SECONDS` | `60` | How long cloud quota results are reused across admin status requests. |
-| `CACHE_MAX_SIZE_MB` | `4096` | Max on-disk cache size in MB. |
+| `CACHE_MAX_SIZE_MB` | `4096` | Max total size in MB of the local copies of recent uploads (`CACHE_DIR/recent-uploads`). When exceeded, the oldest copies are dropped and those files are served from the provider instead. Leftover copies from a previous run are removed on start-up. `0` disables the limit. |
 | `UPLOAD_MAX_FILE_MB` | `10240` | Max single-file upload size in MB. |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | Timeout for a single file download from O2/Movistar. |
 

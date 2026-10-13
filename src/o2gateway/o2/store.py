@@ -51,6 +51,7 @@ class O2CloudFileStore:
         self._background_tasks: set[asyncio.Task] = set()
         self._folder_locks: dict[str, asyncio.Lock] = {}
         self._spool_dir().mkdir(parents=True, exist_ok=True)
+        self._purge_orphaned_local_copies()
 
     # ------------------------------------------------------------------ lectura
 
@@ -295,9 +296,53 @@ class O2CloudFileStore:
                 if entry.remote_id is not None:
                     self._hidden_remote_ids.pop(entry.remote_id, None)
 
+    def _purge_orphaned_local_copies(self) -> None:
+        # The overlay only lives in memory, so any local copy found at start-up
+        # belongs to a previous process and would never be deleted (#24).
+        removed = 0
+        for leftover in self._spool_dir().glob("upload-*.tmp"):
+            try:
+                leftover.unlink()
+                removed += 1
+            except OSError:
+                pass
+        if removed:
+            logger.info("removed orphaned recent-upload copies", extra={"files": removed})
+
+    def _sweep_expired_entries(self) -> None:
+        # Expiry used to be lazy: an entry was only dropped when its own path or
+        # its folder was accessed again. Backup tools write once and move on, so
+        # their copies piled up in recent-uploads until the disk filled (#24).
+        now = time.time()
+        for path in [path for path, entry in self._overlay.items() if now >= entry.expires_at]:
+            self._drop_entry(path)
+
+    def _enforce_local_copy_budget(self) -> None:
+        # CACHE_MAX_SIZE_MB caps the local copies. Evicting a copy is safe: an
+        # overlay entry without one is served from the provider, exactly like
+        # uploads above UPLOAD_RECENT_CACHE_MAX_FILE_MB. 0 disables the cap.
+        limit = self.settings.cache_max_size_mb * 1024 * 1024
+        if limit <= 0:
+            return
+        copies = sorted(
+            (entry for entry in self._overlay.values() if entry.local_path is not None),
+            key=lambda entry: entry.expires_at,
+        )
+        total = sum(entry.metadata.size or 0 for entry in copies)
+        for entry in copies:
+            if total <= limit:
+                break
+            try:
+                os.unlink(entry.local_path)
+            except OSError:
+                pass
+            entry.local_path = None
+            total -= entry.metadata.size or 0
+
     def _store_uploaded(self, path: str, uploaded: O2Item, local_tmp_path: str, parent_folder_id: str) -> OverlayEntry:
         normalized = normalize_cloud_path(path)
         self._drop_entry(normalized)
+        self._sweep_expired_entries()
         size = os.path.getsize(local_tmp_path)
         local_copy: Optional[str] = None
         if size <= self.settings.upload_recent_cache_max_file_mb * 1024 * 1024:
@@ -318,6 +363,7 @@ class O2CloudFileStore:
         )
         self._overlay[normalized] = entry
         self._path_to_item[normalized] = item
+        self._enforce_local_copy_budget()
         logger.info(
             "upload stored in overlay",
             extra={"path": normalized, "remoteId": remote_id, "bytesIn": size, "localCopy": local_copy is not None},

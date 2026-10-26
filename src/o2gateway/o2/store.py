@@ -318,8 +318,14 @@ class O2CloudFileStore:
         for leftover in self._spool_dir().glob("upload-*.tmp"):
             if self._delete_local_copy(str(leftover)):
                 removed += 1
-            else:
-                failed += 1
+                continue
+            failed += 1
+            # Still on disk: count it against the budget and retry it later,
+            # like any other copy whose deletion failed.
+            try:
+                self._stranded_copies[str(leftover)] = leftover.stat().st_size
+            except OSError:
+                self._stranded_copies[str(leftover)] = 0
         if removed:
             logger.info("removed orphaned recent-upload copies", extra={"files": removed})
         if failed:

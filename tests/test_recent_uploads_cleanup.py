@@ -180,3 +180,30 @@ async def test_startup_reports_copies_it_cannot_remove(tmp_path, monkeypatch, ca
 
     assert orphan.exists()
     assert any("could not be removed" in record.getMessage() for record in caplog.records)
+
+
+async def test_an_orphan_that_survives_startup_counts_against_the_budget_and_is_retried(tmp_path, monkeypatch):
+    _spool(tmp_path).mkdir(parents=True)
+    orphan = _spool(tmp_path) / "upload-orphan.tmp"
+    orphan.write_bytes(b"x" * 700_000)
+    real_unlink = os.unlink
+    stuck = {str(orphan)}
+
+    def unlink(path, *args, **kwargs):
+        if str(path) in stuck:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.os, "unlink", unlink)
+    _, store = await build(tmp_path, cache_max_size_mb=1)
+
+    await _upload(store, tmp_path, "first", b"1" * 600_000)
+    assert _disk_usage(tmp_path) <= LIMIT  # the orphan's 700 KB left no room for a copy
+    assert set(_copies(tmp_path)) == _tracked_copies(store)
+
+    stuck.clear()
+    await _upload(store, tmp_path, "second", b"2" * 600_000)
+
+    assert not orphan.exists()  # retried on the next sweep
+    assert _disk_usage(tmp_path) <= LIMIT
+    assert set(_copies(tmp_path)) == _tracked_copies(store)

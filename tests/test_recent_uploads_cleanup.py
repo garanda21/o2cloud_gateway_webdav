@@ -182,12 +182,8 @@ async def test_startup_reports_copies_it_cannot_remove(tmp_path, monkeypatch, ca
     assert any("could not be removed" in record.getMessage() for record in caplog.records)
 
 
-async def test_an_orphan_that_survives_startup_counts_against_the_budget_and_is_retried(tmp_path, monkeypatch):
-    _spool(tmp_path).mkdir(parents=True)
-    orphan = _spool(tmp_path) / "upload-orphan.tmp"
-    orphan.write_bytes(b"x" * 700_000)
+def _blocking_unlink(monkeypatch, stuck):
     real_unlink = os.unlink
-    stuck = {str(orphan)}
 
     def unlink(path, *args, **kwargs):
         if str(path) in stuck:
@@ -195,15 +191,63 @@ async def test_an_orphan_that_survives_startup_counts_against_the_budget_and_is_
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(store_module.os, "unlink", unlink)
+
+
+async def test_an_orphan_that_survives_startup_counts_against_the_budget_and_is_retried(tmp_path, monkeypatch):
+    _spool(tmp_path).mkdir(parents=True)
+    orphan = _spool(tmp_path) / "upload-orphan.tmp"
+    orphan.write_bytes(b"x" * 900_000)
+    stuck = {str(orphan)}
+    _blocking_unlink(monkeypatch, stuck)
+
     _, store = await build(tmp_path, cache_max_size_mb=1)
+    assert store._local_copies_size() == 900_000  # tracked, not forgotten
 
     await _upload(store, tmp_path, "first", b"1" * 600_000)
-    assert _disk_usage(tmp_path) <= LIMIT  # the orphan's 700 KB left no room for a copy
+    assert _disk_usage(tmp_path) == 900_000  # no room left, so no new copy
     assert set(_copies(tmp_path)) == _tracked_copies(store)
 
-    stuck.clear()
+    stuck.clear()  # deletion works again
+    store._sweep_expired_entries()
+
+    assert not orphan.exists()
+    assert store._local_copies_size() == 0  # its size is released
     await _upload(store, tmp_path, "second", b"2" * 600_000)
-
-    assert not orphan.exists()  # retried on the next sweep
-    assert _disk_usage(tmp_path) <= LIMIT
+    assert _disk_usage(tmp_path) == 600_000  # copies are admitted again
     assert set(_copies(tmp_path)) == _tracked_copies(store)
+
+
+async def test_an_undeletable_orphan_over_the_budget_never_lets_usage_grow(tmp_path, monkeypatch):
+    _spool(tmp_path).mkdir(parents=True)
+    orphan = _spool(tmp_path) / "upload-orphan.tmp"
+    orphan.write_bytes(b"x" * 1_500_000)  # already above CACHE_MAX_SIZE_MB=1
+    _blocking_unlink(monkeypatch, {str(orphan)})
+
+    _, store = await build(tmp_path, cache_max_size_mb=1)
+    for name in ("a", "b", "c"):
+        await _upload(store, tmp_path, name, name.encode() * 300_000)
+
+    assert _disk_usage(tmp_path) == 1_500_000  # only the orphan, nothing added
+    assert set(_copies(tmp_path)) == {"upload-orphan.tmp"}
+    assert await _read(store, "/a") == b"a" * 300_000  # served from the provider
+
+
+async def test_an_orphan_of_unknown_size_is_assumed_to_fill_the_budget(tmp_path, monkeypatch):
+    _spool(tmp_path).mkdir(parents=True)
+    orphan = _spool(tmp_path) / "upload-orphan.tmp"
+    orphan.write_bytes(b"x" * 1000)
+    _blocking_unlink(monkeypatch, {str(orphan)})
+    real_stat = type(orphan).stat
+
+    def stat(self, *args, **kwargs):
+        if self.name == "upload-orphan.tmp":
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(orphan), "stat", stat)
+    _, store = await build(tmp_path, cache_max_size_mb=1)
+    monkeypatch.setattr(type(orphan), "stat", real_stat)
+
+    await _upload(store, tmp_path, "first", b"1" * 1000)
+
+    assert _copies(tmp_path) == ["upload-orphan.tmp"]  # conservative: no new copy

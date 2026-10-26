@@ -325,7 +325,9 @@ class O2CloudFileStore:
             try:
                 self._stranded_copies[str(leftover)] = leftover.stat().st_size
             except OSError:
-                self._stranded_copies[str(leftover)] = 0
+                # Size unknown: assume it fills the whole budget, so no new
+                # optional copy is admitted until it can be removed.
+                self._stranded_copies[str(leftover)] = self._local_copy_budget()
         if removed:
             logger.info("removed orphaned recent-upload copies", extra={"files": removed})
         if failed:

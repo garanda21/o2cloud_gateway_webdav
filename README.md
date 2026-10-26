@@ -359,8 +359,38 @@ of version control (`secrets/` should be git-ignored).
 
 ## Environment variables
 
-All settings come from environment variables (or `.env`). Defaults below are the
-in-code defaults; `docker-compose.yml` overrides several of them.
+All settings come from environment variables. Defaults below are the in-code
+defaults; `docker-compose.yml` overrides several of them.
+
+**With Docker Compose**, the container only receives what `docker-compose.yml`
+lists under `environment:`. Most settings are listed as `NAME: "${NAME:-default}"`,
+so you can change them in `.env` next to the compose file, or in another file
+selected with `docker compose --env-file production.env up -d` (that file is then
+used instead of `.env`). `.env` is optional: every default is the value the
+gateway already uses. For example:
+
+```dotenv
+# .env
+CACHE_MAX_SIZE_MB=1024
+UPLOAD_MAX_FILE_MB=20480
+LOG_LEVEL=DEBUG
+```
+
+Some entries are deliberately fixed in `docker-compose.yml` and are **not** read
+from `.env`; edit the compose file to change them:
+
+- `CLOUD_PROVIDER` (`o2` in the compose file; `.env.example` says `simulated` for
+  local development). For Movistar, change it to `movistar` in the compose file.
+- Ports, bind address and paths that must match the `ports:` and `volumes:` of the
+  compose file (`APP_HOST`, `APP_PORT`, `NOVNC_PORT`, `CONFIG_DIR`, `CACHE_DIR`,
+  `DATA_DIR`, `SQLITE_PATH`, and the `*_FILE` secret paths).
+- Credentials: `WEBDAV_PASSWORD` and `ADMIN_PASSWORD` are ignored in `.env`; the
+  passwords come from the mounted secret files (see [Secrets](#secrets)).
+
+Upgrading from a compose file without these `${...}` entries needs no action:
+without a `.env`, or with one copied from `.env.example`, the resulting values are
+the same as before. If your `.env` contains values you changed, review them before
+upgrading: they were silently ignored until now and will take effect.
 
 ### Application
 

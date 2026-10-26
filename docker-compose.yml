@@ -11,41 +11,71 @@ services:
       # Host port for the noVNC login screen. Change the left side if 6080 is
       # already taken (e.g. Synology DSM), and update O2_LOGIN_NOVNC_URL to match.
       - "6080:6080"
-    # Pass the settings from .env (created from .env.example) into the container.
-    # Without this, compose only uses .env to substitute ${...} below, and the
-    # app never sees the rest of it. Values under `environment:` take precedence.
-    env_file: .env
+    # Settings come from the `${NAME:-default}` entries below. Compose fills them
+    # from .env next to this file, or from the file given with
+    # `docker compose --env-file other.env ...`; .env is optional and every
+    # default equals the app's own default. Entries without `${...}` are wiring
+    # that must match the ports/volumes of this file (or CLOUD_PROVIDER, which
+    # .env.example sets to `simulated`): change them here, not in .env.
     environment:
       # Run as the host user/group that owns the mounted volumes. The entrypoint
       # applies these and drops privileges; no `user:` override needed.
-      PUID: "1000"
-      PGID: "100"
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-100}"
       APP_HOST: "0.0.0.0"
       APP_PORT: "8080"
-      APP_BASE_URL: "http://localhost:8088"
+      APP_BASE_URL: "${APP_BASE_URL:-http://localhost:8088}"
       APP_ENCRYPTION_KEY_FILE: "/run/secrets/app_encryption_key"
       DISPLAY: ":99"
-      XVFB_SCREEN: "1280x900x24"
+      XVFB_SCREEN: "${XVFB_SCREEN:-1280x900x24}"
       NOVNC_PORT: "6080"
       # Set this when the noVNC host port differs from the internal 6080 (or the
       # gateway is reached by IP/hostname). Must point at the published host port.
-      O2_LOGIN_NOVNC_URL: "http://localhost:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true"
+      O2_LOGIN_NOVNC_URL: "${O2_LOGIN_NOVNC_URL:-http://localhost:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true}"
       CLOUD_PROVIDER: "o2"
       # Telegram is optional. Put these values in the gitignored .env file.
       # For the token, a read-only secret file is preferable in production.
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TELEGRAM_ALERT_RETRY_SECONDS: "${TELEGRAM_ALERT_RETRY_SECONDS:-300}"
       CONFIG_DIR: "/config"
       CACHE_DIR: "/cache"
       DATA_DIR: "/data"
       SQLITE_PATH: "/data/o2cloud-gateway.db"
-      WEBDAV_PATH_BASE: "/dav"
-      ADMIN_PATH_BASE: "/admin"
-      ADMIN_STATUS_POLL_SECONDS: "120"
-      CACHE_METADATA_TTL_SECONDS: "20"
-      CACHE_QUOTA_TTL_SECONDS: "60"
-      UPLOAD_MAX_FILE_MB: "10240"
-      LOG_LEVEL: "INFO"
+      # O2/Movistar session handling (O2_PROACTIVE_REAUTH_SECONDS is deliberately
+      # absent: when unset, the app disables proactive renewal for O2).
+      O2_PLAYWRIGHT_HEADLESS: "${O2_PLAYWRIGHT_HEADLESS:-false}"
+      O2_SESSION_KEEPALIVE_SECONDS: "${O2_SESSION_KEEPALIVE_SECONDS:-300}"
+      O2_SESSION_RECOVERY_RETRY_SECONDS: "${O2_SESSION_RECOVERY_RETRY_SECONDS:-300}"
+      O2_SESSION_RECOVERY_MAX_RETRY_SECONDS: "${O2_SESSION_RECOVERY_MAX_RETRY_SECONDS:-3600}"
+      O2_SILENT_REAUTH_TIMEOUT_SECONDS: "${O2_SILENT_REAUTH_TIMEOUT_SECONDS:-120}"
+      O2_PROACTIVE_REAUTH_RETRY_SECONDS: "${O2_PROACTIVE_REAUTH_RETRY_SECONDS:-3600}"
+      O2_HTTP_TIMEOUT_SECONDS: "${O2_HTTP_TIMEOUT_SECONDS:-120}"
+      # WebDAV and admin panel. Passwords are not taken from .env: they come
+      # from the secret files mounted below.
+      WEBDAV_ENABLED: "${WEBDAV_ENABLED:-true}"
+      WEBDAV_USERNAME: "${WEBDAV_USERNAME:-o2dav}"
+      WEBDAV_PATH_BASE: "${WEBDAV_PATH_BASE:-/dav}"
+      WEBDAV_READ_ONLY: "${WEBDAV_READ_ONLY:-false}"
+      WEBDAV_ALLOW_DOTFILES: "${WEBDAV_ALLOW_DOTFILES:-true}"
+      WEBDAV_DEPTH_INFINITY: "${WEBDAV_DEPTH_INFINITY:-false}"
+      WEBDAV_IGNORE_APPLEDOUBLE: "${WEBDAV_IGNORE_APPLEDOUBLE:-true}"
+      ADMIN_ENABLED: "${ADMIN_ENABLED:-true}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PATH_BASE: "${ADMIN_PATH_BASE:-/admin}"
+      ADMIN_STATUS_POLL_SECONDS: "${ADMIN_STATUS_POLL_SECONDS:-120}"
+      # Cache and transfer limits
+      CACHE_METADATA_TTL_SECONDS: "${CACHE_METADATA_TTL_SECONDS:-20}"
+      CACHE_NEGATIVE_TTL_SECONDS: "${CACHE_NEGATIVE_TTL_SECONDS:-5}"
+      CACHE_QUOTA_TTL_SECONDS: "${CACHE_QUOTA_TTL_SECONDS:-60}"
+      CACHE_MAX_SIZE_MB: "${CACHE_MAX_SIZE_MB:-4096}"
+      UPLOAD_MAX_FILE_MB: "${UPLOAD_MAX_FILE_MB:-10240}"
+      UPLOAD_RECENT_CACHE_TTL_SECONDS: "${UPLOAD_RECENT_CACHE_TTL_SECONDS:-900}"
+      UPLOAD_RECENT_CACHE_MAX_FILE_MB: "${UPLOAD_RECENT_CACHE_MAX_FILE_MB:-256}"
+      UPLOAD_OVERWRITE_RETRY_SECONDS: "${UPLOAD_OVERWRITE_RETRY_SECONDS:-20}"
+      DELETE_TOMBSTONE_TTL_SECONDS: "${DELETE_TOMBSTONE_TTL_SECONDS:-300}"
+      DOWNLOAD_TIMEOUT_SECONDS: "${DOWNLOAD_TIMEOUT_SECONDS:-3600}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
     volumes:
       - ./config:/config
       - ./cache:/cache

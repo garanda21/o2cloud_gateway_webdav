@@ -475,7 +475,9 @@ CLOUD_PROVIDER=movistar
 | `CACHE_METADATA_TTL_SECONDS` | `20` | How long directory/file metadata is cached before refetching from O2/Movistar. |
 | `CACHE_NEGATIVE_TTL_SECONDS` | `5` | How long "not found" results are cached. |
 | `CACHE_QUOTA_TTL_SECONDS` | `60` | How long cloud quota results are reused across admin status requests. |
-| `CACHE_MAX_SIZE_MB` | `4096` | Max total size in MB of the local copies of recent uploads (`CACHE_DIR/recent-uploads`). When exceeded, the oldest copies are dropped and those files are served from the provider instead. Leftover copies from a previous run are removed on start-up. `0` disables the limit. |
+| `CACHE_MAX_SIZE_MB` | `4096` | Max total size in MB of the local copies of recent uploads (`CACHE_DIR/recent-uploads`). Room is made before each new copy by dropping the oldest ones; a copy that does not fit is simply not made, and those files are served from the provider instead. Copies left by a previous run are removed on start-up. `0` disables the limit. |
+| `UPLOAD_RECENT_CACHE_TTL_SECONDS` | `900` | How long a recent upload keeps its local copy. Expiry is driven by activity, not by a timer: expired copies are removed on the next upload, or when the file or its folder is read. An idle gateway keeps them until then (always within `CACHE_MAX_SIZE_MB`) or until it restarts. |
+| `UPLOAD_RECENT_CACHE_MAX_FILE_MB` | `256` | Largest upload that gets a local copy. `0` keeps no local copies at all. |
 | `UPLOAD_MAX_FILE_MB` | `10240` | Max single-file upload size in MB. |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | Timeout for a single file download from O2/Movistar. |
 

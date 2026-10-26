@@ -50,6 +50,9 @@ class O2CloudFileStore:
         self._hidden_remote_ids: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()
         self._folder_locks: dict[str, asyncio.Lock] = {}
+        # Local copies whose deletion failed: still on disk, still counted
+        # against CACHE_MAX_SIZE_MB, and retried on the next sweep.
+        self._stranded_copies: dict[str, int] = {}
         self._spool_dir().mkdir(parents=True, exist_ok=True)
         self._purge_orphaned_local_copies()
 
@@ -270,10 +273,8 @@ class O2CloudFileStore:
         self._path_to_item.pop(normalized, None)
         if entry is None or entry.local_path is None:
             return
-        try:
-            os.unlink(entry.local_path)
-        except OSError:
-            pass
+        if not self._delete_local_copy(entry.local_path):
+            self._stranded_copies[entry.local_path] = entry.metadata.size or 0
 
     def _is_hidden_remote_id(self, remote_id: str) -> bool:
         expires_at = self._hidden_remote_ids.get(remote_id)
@@ -296,59 +297,113 @@ class O2CloudFileStore:
                 if entry.remote_id is not None:
                     self._hidden_remote_ids.pop(entry.remote_id, None)
 
+    def _delete_local_copy(self, local_path: str) -> bool:
+        """Delete a local copy. False if it is still on disk and must stay accounted."""
+        try:
+            os.unlink(local_path)
+        except FileNotFoundError:
+            return True
+        except OSError as ex:
+            logger.warning(
+                "could not delete recent-upload copy",
+                extra={"file": os.path.basename(local_path), "error": type(ex).__name__, "errno": ex.errno},
+            )
+            return False
+        return True
+
     def _purge_orphaned_local_copies(self) -> None:
         # The overlay only lives in memory, so any local copy found at start-up
         # belongs to a previous process and would never be deleted (#24).
-        removed = 0
+        removed = failed = 0
         for leftover in self._spool_dir().glob("upload-*.tmp"):
-            try:
-                leftover.unlink()
+            if self._delete_local_copy(str(leftover)):
                 removed += 1
-            except OSError:
-                pass
+            else:
+                failed += 1
         if removed:
             logger.info("removed orphaned recent-upload copies", extra={"files": removed})
+        if failed:
+            logger.warning("orphaned recent-upload copies could not be removed", extra={"files": failed})
 
     def _sweep_expired_entries(self) -> None:
-        # Expiry used to be lazy: an entry was only dropped when its own path or
-        # its folder was accessed again. Backup tools write once and move on, so
-        # their copies piled up in recent-uploads until the disk filled (#24).
+        # Expiry is driven by activity, not by a timer: expired entries are swept
+        # on every new upload (and, as before, when their path or folder is read).
+        # Before #24 only the latter happened, so write-only backups never
+        # released their copies.
         now = time.time()
         for path in [path for path, entry in self._overlay.items() if now >= entry.expires_at]:
             self._drop_entry(path)
+        for local_path in list(self._stranded_copies):
+            if self._delete_local_copy(local_path):
+                del self._stranded_copies[local_path]
 
-    def _enforce_local_copy_budget(self) -> None:
-        # CACHE_MAX_SIZE_MB caps the local copies. Evicting a copy is safe: an
-        # overlay entry without one is served from the provider, exactly like
-        # uploads above UPLOAD_RECENT_CACHE_MAX_FILE_MB. 0 disables the cap.
-        limit = self.settings.cache_max_size_mb * 1024 * 1024
+    def _local_copy_budget(self) -> int:
+        return self.settings.cache_max_size_mb * 1024 * 1024
+
+    def _local_copies_size(self) -> int:
+        tracked = sum(entry.metadata.size or 0 for entry in self._overlay.values() if entry.local_path is not None)
+        return tracked + sum(self._stranded_copies.values())
+
+    def _reserve_local_copy(self, size: int) -> bool:
+        """Make room for a new local copy of `size` bytes within CACHE_MAX_SIZE_MB.
+
+        Evicts the oldest copies first. Evicting is safe: an overlay entry without
+        a local copy is served from the provider, exactly like uploads above
+        UPLOAD_RECENT_CACHE_MAX_FILE_MB. Returns False if the copy cannot fit, in
+        which case no copy should be made. A budget of 0 disables the cap.
+        """
+        limit = self._local_copy_budget()
         if limit <= 0:
-            return
-        copies = sorted(
+            return True
+        if size > limit:
+            return False
+        total = self._local_copies_size()
+        candidates = sorted(
             (entry for entry in self._overlay.values() if entry.local_path is not None),
             key=lambda entry: entry.expires_at,
         )
-        total = sum(entry.metadata.size or 0 for entry in copies)
-        for entry in copies:
-            if total <= limit:
+        for entry in candidates:
+            if total + size <= limit:
                 break
-            try:
-                os.unlink(entry.local_path)
-            except OSError:
-                pass
-            entry.local_path = None
-            total -= entry.metadata.size or 0
+            if self._delete_local_copy(entry.local_path):
+                entry.local_path = None
+                total -= entry.metadata.size or 0
+            # A copy that could not be deleted keeps its path and its size, so it
+            # is retried next time instead of becoming an untracked orphan.
+        return total + size <= limit
+
+    def _make_local_copy(self, local_tmp_path: str, size: int) -> Optional[str]:
+        """Best-effort local copy of an upload the provider has already accepted.
+
+        Any failure (for example ENOSPC) is a cache miss, not an upload failure:
+        the partial target is removed and the file is served from the provider.
+        """
+        if size > self.settings.upload_recent_cache_max_file_mb * 1024 * 1024:
+            return None
+        if not self._reserve_local_copy(size):
+            return None
+        target = self._spool_dir() / ("upload-%s.tmp" % uuid4().hex)
+        try:
+            shutil.copyfile(local_tmp_path, target)
+        except OSError as ex:
+            logger.warning(
+                "recent-upload local copy skipped",
+                extra={"error": type(ex).__name__, "errno": ex.errno, "bytesIn": size},
+            )
+            if not self._delete_local_copy(str(target)):
+                try:
+                    self._stranded_copies[str(target)] = os.path.getsize(target)
+                except OSError:
+                    self._stranded_copies[str(target)] = size
+            return None
+        return str(target)
 
     def _store_uploaded(self, path: str, uploaded: O2Item, local_tmp_path: str, parent_folder_id: str) -> OverlayEntry:
         normalized = normalize_cloud_path(path)
         self._drop_entry(normalized)
         self._sweep_expired_entries()
         size = os.path.getsize(local_tmp_path)
-        local_copy: Optional[str] = None
-        if size <= self.settings.upload_recent_cache_max_file_mb * 1024 * 1024:
-            target = self._spool_dir() / ("upload-%s.tmp" % uuid4().hex)
-            shutil.copyfile(local_tmp_path, target)
-            local_copy = str(target)
+        local_copy = self._make_local_copy(local_tmp_path, size)
         remote_id = None if uploaded.id.startswith("pending:") else uploaded.id
         item = replace(uploaded, name=basename(normalized), parent_id=parent_folder_id, size=size)
         metadata = to_cloud_metadata(item, normalized)
@@ -363,7 +418,6 @@ class O2CloudFileStore:
         )
         self._overlay[normalized] = entry
         self._path_to_item[normalized] = item
-        self._enforce_local_copy_budget()
         logger.info(
             "upload stored in overlay",
             extra={"path": normalized, "remoteId": remote_id, "bytesIn": size, "localCopy": local_copy is not None},

@@ -1,5 +1,20 @@
 # O2/Movistar Cloud WebDAV Gateway
 
+> [!IMPORTANT]
+> **This project is being archived and is no longer maintained.** 👋
+>
+> Thank you so much to everyone who used it, reported issues, tested fixes or
+> contributed in any way. It truly means a lot!
+>
+> A newer project, **[MovistarWebDAVProxy](https://github.com/uniextra/MovistarWebDAVProxy)**,
+> goes well beyond what this gateway does and has much more community activity.
+> I recommend moving there: many of the issues reported here are likely already
+> fixed in it.
+>
+> No new fixes or releases will be published here. If you would like to take over
+> this project and keep it going, I would be happy to hand it over — just open an
+> issue and let me know.
+
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-garanda21%2Fo2cloud__gateway__webdav-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/garanda21/o2cloud_gateway_webdav)
 [![GitHub Release](https://img.shields.io/github/v/release/garanda21/o2cloud_gateway_webdav?display_name=tag)](https://github.com/garanda21/o2cloud_gateway_webdav/releases)
 
